@@ -1,5 +1,6 @@
 mod builtins;
 mod parser;
+mod table;
 
 use std::io::{self, Write};
 use std::process::Command;
@@ -10,10 +11,11 @@ use std::time::Duration;
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 // Colores ANSI. Cambia los números para cambiar el estilo (38;2;R;G;B = color RGB).
-const RED: &str = "\x1b[38;2;255;70;70m";
-const GRAY: &str = "\x1b[38;2;140;145;155m";
-const BOLD: &str = "\x1b[1m";
-const RESET: &str = "\x1b[0m";
+pub const RED: &str = "\x1b[38;2;255;70;70m";
+pub const GRAY: &str = "\x1b[38;2;140;145;155m";
+pub const BLUE: &str = "\x1b[38;2;97;175;239m";
+pub const BOLD: &str = "\x1b[1m";
+pub const RESET: &str = "\x1b[0m";
 
 const BANNER: &str = r"
   ███████╗██╗   ██╗███████╗██╗  ██╗
