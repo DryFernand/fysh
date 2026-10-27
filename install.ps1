@@ -1,8 +1,8 @@
 # Instala fysh en Windows (menú Inicio + escritorio). Para instalar o actualizar:
-#   irm https://raw.githubusercontent.com/TU_USUARIO/fysh/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/DryFernand/fysh/main/install.ps1 | iex
 # Si FYSH_EXE está definida (lo hace dev-install.ps1), usa ese exe en vez de descargar.
 $ErrorActionPreference = 'Stop'
-$repo = 'TU_USUARIO/fysh'
+$repo = 'DryFernand/fysh'
 
 if (Get-Process fysh -ErrorAction SilentlyContinue) { throw "Cierra fysh antes de instalar." }
 
