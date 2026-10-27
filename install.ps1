@@ -73,6 +73,11 @@ if ($wt) {
     New-Item -ItemType Directory -Force $fragDir | Out-Null
     # UTF-8 sin BOM: Set-Content -Encoding UTF8 en PowerShell 5.1 agrega BOM y puede romper el JSON
     [IO.File]::WriteAllText("$fragDir\fysh.json", ($fragment | ConvertTo-Json -Depth 5))
+
+    # Si Windows Terminal ya está abierto, solo lee el perfil nuevo al recargar su configuración.
+    # Cambiar la fecha de settings.json (sin tocar su contenido) fuerza esa recarga.
+    $wtSettings = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
+    if (Test-Path $wtSettings) { (Get-Item $wtSettings).LastWriteTime = Get-Date }
 }
 
 # --- Accesos directos: abren el perfil de Windows Terminal si existe, si no el exe directo ---
@@ -92,4 +97,3 @@ foreach ($dir in [Environment]::GetFolderPath('Programs'), [Environment]::GetFol
     $lnk.Save()
 }
 Write-Host "fysh instalada en $dest (menu Inicio y escritorio)"
-if ($wt) { Write-Host "Si Windows Terminal estaba abierto, cierralo para que cargue la fuente y el perfil." }
