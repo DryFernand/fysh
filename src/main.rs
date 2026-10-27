@@ -9,6 +9,20 @@ use std::time::Duration;
 /// Se pone en true cuando el usuario presiona Ctrl+C.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
+// Colores ANSI. Cambia los números para cambiar el estilo (38;2;R;G;B = color RGB).
+const RED: &str = "\x1b[38;2;255;70;70m";
+const GRAY: &str = "\x1b[38;2;140;145;155m";
+const BOLD: &str = "\x1b[1m";
+const RESET: &str = "\x1b[0m";
+
+const BANNER: &str = r"
+  ███████╗██╗   ██╗███████╗██╗  ██╗
+  ██╔════╝╚██╗ ██╔╝██╔════╝██║  ██║
+  █████╗   ╚████╔╝ ███████╗███████║
+  ██╔══╝    ╚██╔╝  ╚════██║██╔══██║
+  ██║        ██║   ███████║██║  ██║
+  ╚═╝        ╚═╝   ╚══════╝╚═╝  ╚═╝";
+
 /// Estado compartido de la shell. Agrega campos aquí (aliases, historial, etc.).
 pub struct Shell {
     pub last_status: i32,
@@ -22,11 +36,12 @@ fn main() {
     ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst)).ok();
 
     print!("\x1b]0;fysh\x07"); // título de la ventana
-    println!("fysh {} - escribe 'help' para ver los comandos\n", env!("CARGO_PKG_VERSION"));
+    println!("{RED}{BANNER}{RESET}");
+    println!("  {GRAY}v{} · escribe 'help' para ver los comandos{RESET}\n", env!("CARGO_PKG_VERSION"));
 
     while shell.running {
         INTERRUPTED.store(false, Ordering::SeqCst);
-        print_prompt();
+        print_prompt(&shell);
 
         let mut line = String::new();
         let read = io::stdin().read_line(&mut line);
@@ -55,9 +70,18 @@ fn main() {
     std::process::exit(shell.last_status);
 }
 
-fn print_prompt() {
-    let cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
-    print!("{cwd} > ");
+/// Prompt: "fysh ~\carpeta ❯". Si el último comando falló, muestra su código.
+fn print_prompt(shell: &Shell) {
+    let mut cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+    if !home.is_empty() && cwd.starts_with(&home) {
+        cwd = format!("~{}", &cwd[home.len()..]);
+    }
+    let status = match shell.last_status {
+        0 => String::new(),
+        code => format!("{RED}[{code}] "),
+    };
+    print!("{BOLD}{RED}fysh{RESET} {GRAY}{cwd}{RESET} {status}{RED}❯{RESET} ");
     io::stdout().flush().ok();
 }
 

@@ -24,8 +24,12 @@ fn exit(args: &[String], shell: &mut Shell) -> i32 {
 
 fn cd(args: &[String]) -> i32 {
     let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
-    let target = args.first().map(String::as_str).unwrap_or(&home);
-    match env::set_current_dir(target) {
+    let target = match args.first() {
+        Some(a) if a.starts_with('~') => format!("{home}{}", &a[1..]),
+        Some(a) => a.clone(),
+        None => home,
+    };
+    match env::set_current_dir(&target) {
         Ok(_) => 0,
         Err(e) => {
             eprintln!("cd: {target}: {e}");
