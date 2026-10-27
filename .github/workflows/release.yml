@@ -1,0 +1,36 @@
+# Al subir un tag (git tag v0.1.0 && git push --tags) compila fysh
+# para Windows, Linux y Mac y publica los ejecutables en GitHub Releases.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            bin: fysh.exe
+            asset: fysh-windows-x86_64.exe
+          - os: ubuntu-latest
+            bin: fysh
+            asset: fysh-linux-x86_64
+          - os: macos-latest
+            bin: fysh
+            asset: fysh-macos-aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test
+      - run: cargo build --release
+      - shell: bash
+        run: cp target/release/${{ matrix.bin }} ${{ matrix.asset }}
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset }}

@@ -1,0 +1,17 @@
+#!/bin/sh
+# Instala fysh en Linux o Mac. Para instalar o actualizar:
+#   curl -fsSL https://raw.githubusercontent.com/TU_USUARIO/fysh/main/install.sh | sh
+set -e
+REPO="TU_USUARIO/fysh"
+
+case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64) ASSET=fysh-linux-x86_64 ;;
+    Darwin-arm64) ASSET=fysh-macos-aarch64 ;;
+    *) echo "fysh: plataforma no soportada: $(uname -s) $(uname -m)" >&2; exit 1 ;;
+esac
+
+mkdir -p "$HOME/.local/bin"
+curl -fsSL "https://github.com/$REPO/releases/latest/download/$ASSET" -o "$HOME/.local/bin/fysh"
+chmod +x "$HOME/.local/bin/fysh"
+echo "fysh instalada en ~/.local/bin/fysh"
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "Agrega ~/.local/bin a tu PATH para usar 'fysh'." ;; esac
