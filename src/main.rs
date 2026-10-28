@@ -19,6 +19,7 @@ mod parser;
 mod picker;
 mod procs;
 mod projenv;
+mod protobuf;
 mod run;
 mod ssh;
 mod table;

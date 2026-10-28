@@ -49,10 +49,12 @@ pub fn run(args: &[String], shell: &mut Shell) -> Option<i32> {
         }
         "env" if rest.is_empty() => crate::envvars::env_cmd(),
         "path" if rest.is_empty() => crate::envvars::path_cmd(),
+        // claude / agy / opencode -rename | -delete
+        cmd @ ("claude" | "agy" | "antigravity" | "opencode") if matches!(rest, [a] if ["-rename", "--rename", "-delete", "--delete"].contains(&a.as_str())) => {
+            crate::agents::manage(if cmd == "antigravity" { "agy" } else { cmd }, &rest[0])
+        }
         "claude" if rest.is_empty() => crate::agents::claude_picker(),
         "agy" | "antigravity" if rest.is_empty() => crate::agents::agy_picker(),
-        "agy" | "antigravity" if matches!(rest, [a] if a == "-rename" || a == "--rename") => crate::agents::agy_rename(),
-        "agy" | "antigravity" if matches!(rest, [a] if a == "-delete" || a == "--delete") => crate::agents::agy_delete(),
         "opencode" => crate::agents::opencode(rest),
         "git" => return crate::git::run(rest),
         _ => return None,
@@ -299,7 +301,7 @@ fn help() -> i32 {
     println!("{GRAY}sin argumentos abren un selector. Con argumentos, git funciona como siempre.{RESET}");
     println!("{GRAY}Agentes de IA: claude (Claude Code), agy o antigravity (Antigravity) y opencode (OpenCode){RESET}");
     println!("{GRAY}muestran tus conversaciones de esta carpeta para reanudar una o empezar otra.{RESET}");
-    println!("{GRAY}agy -rename / agy -delete: renombrar o borrar una conversación de Antigravity.{RESET}");
+    println!("{GRAY}claude/agy/opencode -rename o -delete: renombrar o borrar una conversación (sin abrir el chat).{RESET}");
     0
 }
 

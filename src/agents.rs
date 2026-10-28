@@ -24,47 +24,200 @@ pub fn agy_picker() -> i32 {
     pick("agy", "--conversation", list_agy_sessions())
 }
 
-/// Elegir una conversación de agy de esta carpeta (para renombrarla o borrarla).
-fn pick_agy_session(action: &str) -> Option<Session> {
-    let sessions = list_agy_sessions();
+// ---------- renombrar y borrar conversaciones (claude / agy / opencode -rename / -delete) ----------
+// Sin abrir el chat de ningún agente:
+// - Claude Code: el título es la última línea "custom-title" del .jsonl (lo mismo que hace su /rename);
+//   borrar = mandar a la papelera el .jsonl, su carpeta y sus datos en file-history y session-env.
+// - OpenCode: sus funciones oficiales (`opencode api PATCH /api/session/<id>` y `opencode session delete`).
+// - agy: su índice real es jetbox_summaries_proto.pb (la base conversation_summaries.db es una copia
+//   que agy reconstruye desde ahí), así que se cambian los dos. Solo con agy cerrado (si no, al
+//   cerrarse escribiría encima) y con copia de respaldo en ~/.fysh/respaldos antes de tocar nada.
+
+/// `<agente> -rename` o `<agente> -delete`.
+pub fn manage(agent: &str, flag: &str) -> i32 {
+    let (sessions, label) = match agent {
+        "claude" => (list_claude_sessions(), "Claude Code"),
+        "opencode" => (list_opencode_sessions(), "OpenCode"),
+        _ => (list_agy_sessions(), "Antigravity"),
+    };
+    let rename = flag.trim_start_matches('-') == "rename";
     if sessions.is_empty() {
-        println!("{GRAY}No hay conversaciones de agy en esta carpeta.{RESET}");
-        return None;
+        println!("{GRAY}No hay conversaciones de {label} en esta carpeta.{RESET}");
+        return 0;
     }
     let rows: Vec<Vec<String>> = sessions
         .iter()
         .map(|s| vec![short(&s.title), format!("{GRAY}{}{RESET}", s.modified.format("%Y-%m-%d %H:%M"))])
         .collect();
-    println!("{GRAY}Elige la conversación a {action}:{RESET}");
-    let i = picker::select_one(&["Conversación", "Última actividad"], &rows)?;
-    sessions.into_iter().nth(i)
+    println!("{GRAY}Elige la conversación de {label} a {}:{RESET}", if rename { "renombrar" } else { "borrar" });
+    let Some(i) = picker::select_one(&["Conversación", "Última actividad"], &rows) else { return 0 };
+    let s = &sessions[i];
+
+    let result = if rename {
+        let Some(name) = crate::ask::ask("Nuevo nombre: ", &s.title) else { return 0 };
+        if name == s.title {
+            println!("{GRAY}Sin cambios.{RESET}");
+            return 0;
+        }
+        match agent {
+            "claude" => claude_rename(s, &name),
+            "opencode" => opencode_rename(s, &name),
+            _ => agy_rename(s, &name),
+        }
+        .map(|()| format!("Conversación renombrada: {name}"))
+    } else {
+        if !crate::ask::confirm(&format!("¿Borrar la conversación \"{}\"?", short(&s.title))) {
+            return 0;
+        }
+        match agent {
+            "claude" => claude_delete(s),
+            "opencode" => opencode_delete(s),
+            _ => agy_delete(s),
+        }
+        .map(|()| format!("Conversación borrada: {}", short(&s.title)))
+    };
+    match result {
+        Ok(msg) => {
+            println!("{}✓{RESET} {msg}", crate::GREEN);
+            0
+        }
+        Err(e) => {
+            eprintln!("{}No se pudo:{RESET} {e}", crate::RED);
+            1
+        }
+    }
 }
 
-// agy guarda el nombre real de cada conversación en un archivo interno propio: si se cambia por
-// fuera, agy lo deshace (o queda una conversación rota). Por eso renombrar y borrar se hacen con
-// sus propios comandos /rename y /delete, que solo existen en su pantalla interactiva: fysh abre
-// agy en esa conversación con el comando ya puesto (`-i`), y se sale con Ctrl+C dos veces o /exit.
-
-/// `agy -rename`: elegir una conversación y ponerle otro nombre.
-pub fn agy_rename() -> i32 {
-    let Some(s) = pick_agy_session("renombrar") else { return 0 };
-    let Some(name) = crate::ask::ask("Nuevo nombre: ", &s.title) else { return 0 };
-    if name == s.title {
-        println!("{GRAY}Sin cambios.{RESET}");
-        return 0;
-    }
-    println!("{GRAY}Abriendo agy para renombrarla. Cuando diga que se renombró, sal con Ctrl+C dos veces (o /exit).{RESET}");
-    crate::run_external(&["agy".into(), "--conversation".into(), s.id, "-i".into(), format!("/rename {name}")])
+fn claude_rename(s: &Session, name: &str) -> Result<(), String> {
+    use std::io::Write;
+    let file = project_dir().ok_or("no encontré la carpeta de conversaciones")?.join(format!("{}.jsonl", s.id));
+    let line = serde_json::json!({"type": "custom-title", "customTitle": name, "sessionId": s.id});
+    let mut f = fs::OpenOptions::new().append(true).open(&file).map_err(|e| e.to_string())?;
+    writeln!(f, "{line}").map_err(|e| e.to_string())
 }
 
-/// `agy -delete`: elegir una conversación y borrarla (agy pide confirmar también).
-pub fn agy_delete() -> i32 {
-    let Some(s) = pick_agy_session("borrar") else { return 0 };
-    if !crate::ask::confirm(&format!("¿Borrar la conversación \"{}\"? No se puede deshacer.", short(&s.title))) {
-        return 0;
+/// Todo lo de la conversación va a la papelera (se puede recuperar).
+fn claude_delete(s: &Session) -> Result<(), String> {
+    let project = project_dir().ok_or("no encontré la carpeta de conversaciones")?;
+    let claude = home().ok_or("sin carpeta de usuario")?.join(".claude");
+    let mut paths = vec![project.join(format!("{}.jsonl", s.id)), project.join(&s.id)];
+    paths.extend(["file-history", "session-env"].iter().map(|d| claude.join(d).join(&s.id)));
+    if let Ok(todos) = fs::read_dir(claude.join("todos")) {
+        paths.extend(todos.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&s.id))));
     }
-    println!("{GRAY}Abriendo agy para borrarla: confirma ahí. Después sal con Ctrl+C dos veces (o /exit).{RESET}");
-    crate::run_external(&["agy".into(), "--conversation".into(), s.id, "-i".into(), "/delete".into()])
+    let existing: Vec<PathBuf> = paths.into_iter().filter(|p| p.exists()).collect();
+    trash::delete_all(&existing).map_err(|e| e.to_string())
+}
+
+/// Ejecuta el CLI de OpenCode y devuelve el error que diga si falla.
+fn opencode_run(args: &[&str]) -> Result<(), String> {
+    let out = std::process::Command::new(opencode_program()).args(args).stdin(std::process::Stdio::null()).output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    let out_text = String::from_utf8_lossy(&out.stdout);
+    Err(err.lines().chain(out_text.lines()).find(|l| !l.trim().is_empty()).unwrap_or("OpenCode no respondió").trim().to_string())
+}
+
+fn opencode_rename(s: &Session, name: &str) -> Result<(), String> {
+    let body = serde_json::json!({"title": name}).to_string();
+    opencode_run(&["api", "PATCH", &format!("/api/session/{}", s.id), "-d", &body])
+}
+
+fn opencode_delete(s: &Session) -> Result<(), String> {
+    opencode_run(&["session", "delete", &s.id])
+}
+
+fn agy_dir() -> Option<PathBuf> {
+    home().map(|h| h.join(".gemini").join("antigravity-cli"))
+}
+
+/// agy no puede estar abierto mientras se cambia su índice.
+fn agy_running() -> bool {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, false);
+    sys.processes().values().any(|p| p.name().to_string_lossy().to_lowercase().trim_end_matches(".exe") == "agy")
+}
+
+/// Copia el índice y la base de agy a ~/.fysh/respaldos/agy-<fecha> antes de cambiarlos.
+fn agy_backup(dir: &Path) -> Result<(), String> {
+    let dest = home().ok_or("sin carpeta de usuario")?.join(".fysh").join("respaldos").join(format!("agy-{}", Local::now().format("%Y%m%d-%H%M%S")));
+    fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+    for f in ["jetbox_summaries_proto.pb", "conversation_summaries.db"] {
+        if dir.join(f).exists() {
+            fs::copy(dir.join(f), dest.join(f)).map_err(|e| format!("respaldo de {f}: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn agy_check() -> Result<PathBuf, String> {
+    if agy_running() {
+        return Err("agy está abierto: ciérralo primero (si usas su control remoto: agy remote-control stop).".into());
+    }
+    let dir = agy_dir().ok_or("sin carpeta de usuario")?;
+    agy_backup(&dir)?;
+    Ok(dir)
+}
+
+/// annotations/<id>.pbtxt (texto, una propiedad por línea): ahí agy guarda el título que manda;
+/// lo vuelve a copiar a sus índices cada vez que la conversación avanza. Se cambia solo `title:`.
+fn set_annotation_title(text: &str, name: &str) -> String {
+    let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
+    let mut lines: Vec<String> = text.lines().filter(|l| !l.trim_start().starts_with("title:")).map(str::to_owned).collect();
+    lines.insert(0, format!("title:\"{escaped}\""));
+    lines.join("\n") + "\n"
+}
+
+fn agy_rename(s: &Session, name: &str) -> Result<(), String> {
+    let dir = agy_check()?;
+    let annotation = dir.join("annotations").join(format!("{}.pbtxt", s.id));
+    let old = fs::read_to_string(&annotation).unwrap_or_default();
+    fs::create_dir_all(dir.join("annotations")).map_err(|e| e.to_string())?;
+    fs::write(&annotation, set_annotation_title(&old, name)).map_err(|e| e.to_string())?;
+    let index = dir.join("jetbox_summaries_proto.pb");
+    let bytes = fs::read(&index).map_err(|e| e.to_string())?;
+    let new = crate::protobuf::rename_entry(&bytes, &s.id, name).ok_or("no encontré la conversación en el índice de agy (no se cambió nada)")?;
+    // Verificar antes de guardar: el archivo nuevo se lee bien y tiene el título nuevo.
+    if crate::protobuf::title_of(&new, &s.id).as_deref() != Some(name) {
+        return Err("el índice de agy no quedó bien al cambiarlo (no se guardó nada)".into());
+    }
+    fs::write(&index, new).map_err(|e| e.to_string())?;
+    let db = rusqlite::Connection::open(dir.join("conversation_summaries.db")).map_err(|e| e.to_string())?;
+    db.execute("UPDATE conversation_summaries SET title = ?1 WHERE conversation_id = ?2", (name, &s.id)).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn agy_delete(s: &Session) -> Result<(), String> {
+    let dir = agy_check()?;
+    let db = rusqlite::Connection::open(dir.join("conversation_summaries.db")).map_err(|e| e.to_string())?;
+    // La conversación y sus subconversaciones (agentes que lanzó).
+    let mut ids = vec![s.id.clone()];
+    if let Ok(mut stmt) = db.prepare("SELECT conversation_id FROM conversation_summaries WHERE parent_conversation_id = ?1") {
+        if let Ok(rows) = stmt.query_map([&s.id], |r| r.get::<_, String>(0)) {
+            ids.extend(rows.filter_map(Result::ok));
+        }
+    }
+    let index = dir.join("jetbox_summaries_proto.pb");
+    let bytes = fs::read(&index).map_err(|e| e.to_string())?;
+    let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let (new, _) = crate::protobuf::remove_entries(&bytes, &refs).ok_or("el índice de agy no tiene la forma esperada (no se cambió nada)")?;
+    fs::write(&index, new).map_err(|e| e.to_string())?;
+    for id in &ids {
+        db.execute("DELETE FROM conversation_summaries WHERE conversation_id = ?1", [id]).map_err(|e| e.to_string())?;
+    }
+    let mut files = Vec::new();
+    for id in &ids {
+        files.extend([
+            dir.join("conversations").join(format!("{id}.db")),
+            dir.join("brain").join(id),
+            dir.join("annotations").join(format!("{id}.pbtxt")),
+            dir.join("presence").join(format!("{id}.lock")),
+        ]);
+    }
+    let existing: Vec<PathBuf> = files.into_iter().filter(|p| p.exists()).collect();
+    trash::delete_all(&existing).map_err(|e| e.to_string())
 }
 
 /// `opencode`: sin argumentos, el selector; con argumentos, el CLI de OpenCode directo.
@@ -280,6 +433,38 @@ fn short(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cambia_el_titulo_en_las_anotaciones_de_agy() {
+        let old = "title:\"Viejo\"\nlast_user_view_time:{seconds:1 nanos:2}\n";
+        assert_eq!(set_annotation_title(old, "Nuevo \"x\""), "title:\"Nuevo \\\"x\\\"\"\nlast_user_view_time:{seconds:1 nanos:2}\n");
+        assert_eq!(set_annotation_title("", "Ñandú"), "title:\"Ñandú\"\n");
+    }
+
+    /// Prueba real (cambia datos): FYSH_PRUEBA_AGENTE=agy|claude|opencode, FYSH_PRUEBA_ID=<id>,
+    /// FYSH_PRUEBA_ACCION=rename|delete, FYSH_PRUEBA_NOMBRE=<nombre>. Solo con conversaciones de prueba.
+    #[test]
+    #[ignore]
+    fn prueba_real_renombrar_borrar() {
+        let var = |k: &str| std::env::var(k).unwrap();
+        if let Ok(dir) = std::env::var("FYSH_PRUEBA_CARPETA") {
+            std::env::set_current_dir(dir).unwrap(); // Claude busca sus conversaciones por carpeta
+        }
+        let s = Session { id: var("FYSH_PRUEBA_ID"), title: String::new(), modified: Local::now() };
+        let rename = var("FYSH_PRUEBA_ACCION") == "rename";
+        let name = std::env::var("FYSH_PRUEBA_NOMBRE").unwrap_or_default();
+        let result = match (var("FYSH_PRUEBA_AGENTE").as_str(), rename) {
+            ("agy", true) => agy_rename(&s, &name),
+            ("agy", false) => agy_delete(&s),
+            ("claude", true) => claude_rename(&s, &name),
+            ("claude", false) => claude_delete(&s),
+            ("opencode", true) => opencode_rename(&s, &name),
+            (_, false) => opencode_delete(&s),
+            _ => unreachable!(),
+        };
+        println!("RESULTADO: {result:?}");
+        result.unwrap();
+    }
 
     #[test]
     fn codifica_rutas_como_claude_code() {
