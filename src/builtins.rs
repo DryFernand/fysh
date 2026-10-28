@@ -1,5 +1,5 @@
 use crate::table::{self, Align};
-use crate::{Shell, BLUE, GRAY, RESET};
+use crate::{Shell, BLUE, BOLD, GRAY, RED, RESET};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
@@ -291,17 +291,48 @@ fn help() -> i32 {
     .map(|(c, d)| vec![c.to_string(), d.to_string()])
     .collect();
     table::print(&["Comando", "Descripción"], &[Align::Left, Align::Left], &rows);
-    println!("{GRAY}Variables: $NOMBRE usa una variable, $? es el código del último comando.{RESET}");
-    println!("{GRAY}Cualquier otro comando se busca en el PATH (git, notepad, ping...).{RESET}");
-    println!("{GRAY}Combinar: a | b (pipe) · a > f, a >> f, a 2> f, a 2>&1, a < f · a && b, a || b, a ; b · *.txt{RESET}");
-    println!("{GRAY}Teclas: Tab completa · ↑↓ historial · Ctrl+R buscar en el historial · Ctrl+T buscar un archivo{RESET}");
-    println!("{GRAY}Proyectos: al entrar se activa su .venv y se ofrece cargar su .env. Comandos de más de 30 s{RESET}");
-    println!("{GRAY}avisan al terminar si no estás mirando (set FYSH_AVISO_SEGUNDOS=60 para cambiarlo, 0 lo apaga).{RESET}");
-    println!("{GRAY}Git: status, log y branch se muestran en tablas; switch, checkout, add, show y commit{RESET}");
-    println!("{GRAY}sin argumentos abren un selector. Con argumentos, git funciona como siempre.{RESET}");
-    println!("{GRAY}Agentes de IA: claude (Claude Code), agy o antigravity (Antigravity) y opencode (OpenCode){RESET}");
-    println!("{GRAY}muestran tus conversaciones de esta carpeta para reanudar una o empezar otra.{RESET}");
-    println!("{GRAY}claude/agy/opencode -rename o -delete: renombrar o borrar una conversación (sin abrir el chat).{RESET}");
+    let sections: &[(&str, &[(&str, &str)])] = &[
+        ("Escribir comandos", &[
+            ("$NOMBRE", "usa una variable · $? es el código del último comando"),
+            ("Programas", "cualquier otro comando se busca en el PATH (git, notepad, ping…)"),
+            ("a | b", "pasa la salida de a como entrada de b"),
+            ("Redirigir", "a > f · a >> f (agregar) · a 2> f (errores) · a 2>&1 · a < f"),
+            ("Encadenar", "a && b (si a sale bien) · a || b (si a falla) · a ; b (siempre)"),
+            ("*.txt", "comodines: todos los archivos que coinciden"),
+        ]),
+        ("Teclas", &[
+            ("Tab", "completa comandos, archivos y ramas"),
+            ("↑ ↓", "comandos anteriores"),
+            ("Ctrl+R", "buscar en el historial"),
+            ("Ctrl+T", "buscar un archivo"),
+        ]),
+        ("Proyectos", &[
+            (".venv", "se activa al entrar a la carpeta"),
+            (".env", "al entrar se ofrece cargarlo"),
+            ("Avisos", "comandos de más de 30 s avisan al terminar si no estás mirando"),
+            ("", "set FYSH_AVISO_SEGUNDOS=60 lo cambia · 0 lo apaga"),
+        ]),
+        ("Git", &[
+            ("Tablas", "git status, git log y git branch"),
+            ("Selector", "git switch, checkout, add, show y commit sin argumentos"),
+            ("Normal", "con argumentos, git funciona como siempre"),
+        ]),
+        ("Agentes de IA", &[
+            ("claude", "Claude Code"),
+            ("agy", "Antigravity (también: antigravity)"),
+            ("opencode", "OpenCode"),
+            ("", "sin nada: tus conversaciones de esta carpeta, reanudar una o empezar otra"),
+            ("-rename", "renombrar una conversación sin abrir el chat (agy -rename)"),
+            ("-delete", "borrar una conversación sin abrir el chat (claude -delete)"),
+        ]),
+    ];
+    let width = sections.iter().flat_map(|(_, items)| items.iter()).map(|(k, _)| k.chars().count()).max().unwrap_or(0);
+    for (title, items) in sections {
+        println!("\n{RED}{BOLD}{title}{RESET}");
+        for (key, text) in *items {
+            println!("  {BLUE}{key:<width$}{RESET}  {GRAY}{text}{RESET}");
+        }
+    }
     0
 }
 
