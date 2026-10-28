@@ -24,6 +24,49 @@ pub fn agy_picker() -> i32 {
     pick("agy", "--conversation", list_agy_sessions())
 }
 
+/// Elegir una conversación de agy de esta carpeta (para renombrarla o borrarla).
+fn pick_agy_session(action: &str) -> Option<Session> {
+    let sessions = list_agy_sessions();
+    if sessions.is_empty() {
+        println!("{GRAY}No hay conversaciones de agy en esta carpeta.{RESET}");
+        return None;
+    }
+    let rows: Vec<Vec<String>> = sessions
+        .iter()
+        .map(|s| vec![short(&s.title), format!("{GRAY}{}{RESET}", s.modified.format("%Y-%m-%d %H:%M"))])
+        .collect();
+    println!("{GRAY}Elige la conversación a {action}:{RESET}");
+    let i = picker::select_one(&["Conversación", "Última actividad"], &rows)?;
+    sessions.into_iter().nth(i)
+}
+
+// agy guarda el nombre real de cada conversación en un archivo interno propio: si se cambia por
+// fuera, agy lo deshace (o queda una conversación rota). Por eso renombrar y borrar se hacen con
+// sus propios comandos /rename y /delete, que solo existen en su pantalla interactiva: fysh abre
+// agy en esa conversación con el comando ya puesto (`-i`), y se sale con Ctrl+C dos veces o /exit.
+
+/// `agy -rename`: elegir una conversación y ponerle otro nombre.
+pub fn agy_rename() -> i32 {
+    let Some(s) = pick_agy_session("renombrar") else { return 0 };
+    let Some(name) = crate::ask::ask("Nuevo nombre: ", &s.title) else { return 0 };
+    if name == s.title {
+        println!("{GRAY}Sin cambios.{RESET}");
+        return 0;
+    }
+    println!("{GRAY}Abriendo agy para renombrarla. Cuando diga que se renombró, sal con Ctrl+C dos veces (o /exit).{RESET}");
+    crate::run_external(&["agy".into(), "--conversation".into(), s.id, "-i".into(), format!("/rename {name}")])
+}
+
+/// `agy -delete`: elegir una conversación y borrarla (agy pide confirmar también).
+pub fn agy_delete() -> i32 {
+    let Some(s) = pick_agy_session("borrar") else { return 0 };
+    if !crate::ask::confirm(&format!("¿Borrar la conversación \"{}\"? No se puede deshacer.", short(&s.title))) {
+        return 0;
+    }
+    println!("{GRAY}Abriendo agy para borrarla: confirma ahí. Después sal con Ctrl+C dos veces (o /exit).{RESET}");
+    crate::run_external(&["agy".into(), "--conversation".into(), s.id, "-i".into(), "/delete".into()])
+}
+
 /// `opencode`: sin argumentos, el selector; con argumentos, el CLI de OpenCode directo.
 pub fn opencode(args: &[String]) -> i32 {
     let program = opencode_program();
