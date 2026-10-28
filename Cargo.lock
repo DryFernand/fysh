@@ -235,11 +235,13 @@ dependencies = [
 
 [[package]]
 name = "fysh"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "crossterm",
  "ctrlc",
+ "glob",
+ "os_pipe",
  "rusqlite",
  "rustyline",
  "serde_json",
@@ -248,6 +250,12 @@ dependencies = [
  "winreg",
  "winresource",
 ]
+
+[[package]]
+name = "glob"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "hashbrown"
@@ -467,6 +475,16 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "os_pipe"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "parking_lot"

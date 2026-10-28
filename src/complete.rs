@@ -97,27 +97,40 @@ fn scan_path(path: &str) -> HashSet<String> {
     names
 }
 
-/// Pinta la línea: primera palabra verde (existe) o roja (no existe), texto entre comillas
-/// amarillo y $VARIABLES azul. Solo agrega colores: no cambia el ancho del texto.
+/// Pinta la línea: cada comando (al inicio y después de | && || ;) verde si existe o rojo si no,
+/// texto entre comillas amarillo y $VARIABLES azul. Solo agrega colores: no cambia el ancho.
 fn colorize(line: &str, is_command: impl Fn(&str) -> bool) -> String {
     let chars: Vec<char> = line.chars().collect();
+    let is_op = |c: char| matches!(c, '|' | ';' | '&' | '<' | '>');
     let mut out = String::new();
+    let mut at_command = true;
     let mut i = 0;
-    while i < chars.len() && chars[i].is_whitespace() {
-        out.push(chars[i]);
-        i += 1;
-    }
-    let start = i;
-    while i < chars.len() && !chars[i].is_whitespace() {
-        i += 1;
-    }
-    if i > start {
-        let word: String = chars[start..i].iter().collect();
-        let color = if is_command(&word) { GREEN } else { RED };
-        out += &format!("{color}{word}{RESET}");
-    }
     while i < chars.len() {
         let c = chars[i];
+        if c.is_whitespace() {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '|' || c == ';' || (c == '&' && chars.get(i + 1) == Some(&'&')) {
+            at_command = true;
+            while i < chars.len() && matches!(chars[i], '|' | ';' | '&') {
+                out.push(chars[i]);
+                i += 1;
+            }
+            continue;
+        }
+        if at_command && c != '"' && c != '\'' && !is_op(c) {
+            let start = i;
+            while i < chars.len() && !chars[i].is_whitespace() && !is_op(chars[i]) {
+                i += 1;
+            }
+            let word: String = chars[start..i].iter().collect();
+            let color = if is_command(&word) { GREEN } else { RED };
+            out += &format!("{color}{word}{RESET}");
+            at_command = false;
+            continue;
+        }
         if c == '"' || c == '\'' {
             let end = chars[i + 1..].iter().position(|&x| x == c).map_or(chars.len(), |p| i + 1 + p + 1);
             let text: String = chars[i..end].iter().collect();
@@ -186,7 +199,9 @@ impl Completer for FyshHelper {
         let before = &line[..pos];
         let start = before.rfind(char::is_whitespace).map_or(0, |i| i + 1);
         let current = &before[start..];
-        let words: Vec<&str> = before[..start].split_whitespace().collect();
+        // Solo el comando que se está escribiendo: lo que va después del último | && || ;
+        let cut = before[..start].rfind(['|', ';', '&']).map_or(0, |i| i + 1);
+        let words: Vec<&str> = before[cut..start].split_whitespace().collect();
         match candidates(&words, current, &self.aliases.borrow()) {
             Some(list) => Ok((start, list)),
             None => self.files.complete(line, pos, ctx),
@@ -247,6 +262,11 @@ mod tests {
         // Los colores no cambian el texto visible.
         let line = "echo \"sin cerrar $X";
         assert_eq!(crate::table::strip_ansi(&colorize(line, known)), line);
+        // Después de | && ; también hay un comando que pintar; "git" como argumento no.
+        let piped = colorize("gti log|git x && git echo git > git.txt", known);
+        assert!(piped.starts_with(&format!("{RED}gti{RESET}")));
+        assert_eq!(piped.matches(&format!("{GREEN}git{RESET}")).count(), 2, "{piped}");
+        assert_eq!(crate::table::strip_ansi(&piped), "gti log|git x && git echo git > git.txt");
     }
 
     #[test]

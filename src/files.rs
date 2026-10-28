@@ -161,7 +161,12 @@ fn move_path(src: &Path, dst: &Path) -> io::Result<()> {
 
 /// `cat archivo...`: muestra el contenido.
 pub fn cat(args: &[String]) -> i32 {
+    use std::io::IsTerminal;
     if args.is_empty() {
+        // Sin archivos, en un pipe: copia lo que llega (ej: `git log | cat > log.txt`).
+        if !io::stdin().is_terminal() {
+            return io::copy(&mut io::stdin().lock(), &mut io::stdout().lock()).map_or(1, |_| 0);
+        }
         return usage("cat <archivo>...");
     }
     let mut code = 0;

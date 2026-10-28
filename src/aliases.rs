@@ -3,7 +3,7 @@
 //! actualizan ese archivo solos; `config` lo abre en el editor y lo recarga al cerrarlo.
 
 use crate::table::{self, Align};
-use crate::{parser, Shell, GRAY, GREEN, RESET};
+use crate::{Shell, GRAY, GREEN, RESET};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -27,18 +27,6 @@ pub fn load(shell: &mut Shell) {
         crate::execute(shell, line);
     }
     shell.loading_rc = false;
-}
-
-/// Si la primera palabra es un alias, la reemplaza por su comando (una sola vez, sin recursión).
-pub fn expand(shell: &Shell, args: Vec<String>) -> Vec<String> {
-    match shell.aliases.get(&args[0]) {
-        Some(value) => {
-            let mut expanded = parser::parse(value, shell);
-            expanded.extend_from_slice(&args[1..]);
-            expanded
-        }
-        None => args,
-    }
 }
 
 /// "gs = git status" → ("gs", "git status"). También acepta "gs=git status".
@@ -193,15 +181,5 @@ mod tests {
         );
         assert_eq!(update_rc(rc, "nuevo", Some("cls")), format!("{rc}alias nuevo = cls\n"));
         assert_eq!(update_rc(rc, "ll", None), "# mi config\nset EDITOR=code\nalias gs = git status\n");
-    }
-
-    #[test]
-    fn expande_alias_con_argumentos() {
-        let mut shell = Shell::new();
-        shell.aliases.insert("gl".into(), "git log --oneline".into());
-        let args: Vec<String> = ["gl", "-5"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(expand(&shell, args), ["git", "log", "--oneline", "-5"]);
-        let other = vec!["dir".to_string()];
-        assert_eq!(expand(&shell, other), ["dir"]);
     }
 }

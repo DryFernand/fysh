@@ -5,6 +5,7 @@ mod ask;
 mod builtins;
 mod complete;
 mod envvars;
+mod exec;
 mod files;
 mod git;
 mod history;
@@ -82,23 +83,24 @@ impl Shell {
     }
 }
 
-/// Ejecuta una línea: expande alias y corre el comando interno o el programa externo.
+/// Ejecuta una línea: alias, &&, ||, ;, pipes, redirecciones, comandos propios y programas.
 pub fn execute(shell: &mut Shell, line: &str) {
-    let args = parser::parse(line, shell);
-    if args.is_empty() {
-        return;
-    }
-    let args = aliases::expand(shell, args);
+    // BOM: marca invisible que agregan PowerShell y Notepad al inicio del texto.
+    let line = line.trim_start_matches('\u{feff}');
+    let first = parser::parse(line, shell);
+    let Some(cmd) = first.first().cloned() else { return };
     shell.line = line.to_string();
     let start_row = ai::console_row();
     let started = Instant::now();
-    shell.last_status = match builtins::run(&args, shell) {
-        Some(code) => code,
-        None => run_external(&args),
+    // `alias` e `ins:` usan el resto de la línea tal cual: su texto puede llevar | && ; sin ser operadores.
+    shell.last_status = if cmd == "alias" || cmd.starts_with("ins:") {
+        exec::run_args(shell, &first)
+    } else {
+        exec::run_line(shell, line)
     };
     shell.last_duration = started.elapsed();
     // Los comandos de IA no se guardan como "último error": explica debe ver el comando anterior.
-    if shell.last_status != 0 && !["explica", "agent"].contains(&args[0].as_str()) && !args[0].starts_with("ins:") {
+    if shell.last_status != 0 && !["explica", "agent"].contains(&cmd.as_str()) && !cmd.starts_with("ins:") {
         shell.last_failure = Some(Failure {
             command: line.trim().to_string(),
             code: shell.last_status,
@@ -141,9 +143,26 @@ pub fn shell_name() -> String {
 }
 
 fn main() {
-    if std::env::args().nth(1).as_deref() == Some("--version") {
-        println!("fysh {}", env!("CARGO_PKG_VERSION"));
-        return;
+    let argv: Vec<String> = std::env::args().collect();
+    match argv.get(1).map(String::as_str) {
+        Some("--version") => {
+            println!("fysh {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        // `fysh -c "dir | findstr rs"`: ejecuta una línea y sale.
+        Some("-c") => {
+            let mut shell = Shell::new();
+            aliases::load(&mut shell);
+            execute(&mut shell, argv.get(2).map_or("", String::as_str));
+            std::process::exit(shell.last_status);
+        }
+        // Uso interno: una etapa de un pipe (argumentos ya expandidos por el fysh que lo lanzó).
+        Some("--exec") => {
+            let mut shell = Shell::new();
+            let code = exec::run_args(&mut shell, &argv[2..]);
+            std::process::exit(code);
+        }
+        _ => {}
     }
     let mut shell = Shell::new();
 

@@ -135,34 +135,51 @@ fn cls() -> i32 {
 }
 
 /// Lista una carpeta en tabla: primero carpetas, luego archivos, por nombre.
+/// Con archivos (`dir *.txt`, que el comodín convierte en la lista de archivos) muestra solo esos.
 fn dir(args: &[String]) -> i32 {
-    let path = args.first().map(String::as_str).unwrap_or(".");
-    let entries = match fs::read_dir(path) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("dir: {path}: {}", error_msg(&e));
-            return 1;
-        }
-    };
-
     struct Item {
         name: String,
         is_dir: bool,
         size: u64,
         modified: Option<std::time::SystemTime>,
     }
-    let mut items: Vec<Item> = entries
-        .filter_map(Result::ok)
-        .map(|e| {
-            let meta = e.metadata().ok();
-            Item {
-                name: e.file_name().to_string_lossy().into_owned(),
-                is_dir: meta.as_ref().is_some_and(|m| m.is_dir()),
-                size: meta.as_ref().map_or(0, |m| m.len()),
-                modified: meta.and_then(|m| m.modified().ok()),
+    let item = |name: String, meta: Option<fs::Metadata>| Item {
+        name,
+        is_dir: meta.as_ref().is_some_and(|m| m.is_dir()),
+        size: meta.as_ref().map_or(0, |m| m.len()),
+        modified: meta.and_then(|m| m.modified().ok()),
+    };
+
+    let single_dir = match args {
+        [] => Some("."),
+        [p] if std::path::Path::new(p).is_dir() => Some(p.as_str()),
+        _ => None,
+    };
+    let mut items: Vec<Item> = match single_dir {
+        Some(path) => match fs::read_dir(path) {
+            Ok(entries) => entries
+                .filter_map(Result::ok)
+                .map(|e| item(e.file_name().to_string_lossy().into_owned(), e.metadata().ok()))
+                .collect(),
+            Err(e) => {
+                eprintln!("dir: {path}: {}", error_msg(&e));
+                return 1;
             }
-        })
-        .collect();
+        },
+        None => {
+            let mut found = Vec::new();
+            for a in args {
+                match fs::metadata(a) {
+                    Ok(m) => found.push(item(a.clone(), Some(m))),
+                    Err(e) => eprintln!("dir: {a}: {}", error_msg(&e)),
+                }
+            }
+            if found.is_empty() {
+                return 1;
+            }
+            found
+        }
+    };
     items.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
 
     if items.is_empty() {
@@ -258,6 +275,7 @@ fn help() -> i32 {
     table::print(&["Comando", "Descripción"], &[Align::Left, Align::Left], &rows);
     println!("{GRAY}Variables: $NOMBRE usa una variable, $? es el código del último comando.{RESET}");
     println!("{GRAY}Cualquier otro comando se busca en el PATH (git, notepad, ping...).{RESET}");
+    println!("{GRAY}Combinar: a | b (pipe) · a > f, a >> f, a 2> f, a 2>&1, a < f · a && b, a || b, a ; b · *.txt{RESET}");
     println!("{GRAY}Git: status, log y branch se muestran en tablas; switch, checkout, add, show y commit{RESET}");
     println!("{GRAY}sin argumentos abren un selector. Con argumentos, git funciona como siempre.{RESET}");
     println!("{GRAY}Agentes de IA: claude (Claude Code), agy o antigravity (Antigravity) y opencode (OpenCode){RESET}");
