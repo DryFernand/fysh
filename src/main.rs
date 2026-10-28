@@ -4,6 +4,7 @@ mod aliases;
 mod ask;
 mod builtins;
 mod complete;
+mod db;
 mod docker;
 mod envvars;
 mod exec;
@@ -17,6 +18,7 @@ mod procs;
 mod run;
 mod ssh;
 mod table;
+mod tunnel;
 mod update;
 
 use rustyline::error::ReadlineError;
@@ -285,6 +287,12 @@ fn prompt(shell: &Shell) -> String {
         code => format!("{RED}[{code}] "),
     };
     let git = git::prompt_segment();
+    // Túneles activos (siguen vivos aunque se cierre fysh): que no se olviden.
+    let tunnels = match tunnel::active_count() {
+        0 => String::new(),
+        n => format!("{BLUE}⇄{n}{RESET} "),
+    };
+    let took = format!("{tunnels}{took}");
     // Dentro de un servidor el nombre va en amarillo, para no confundirlo con tu PC.
     let name = match remote() {
         Some(_) => format!("{BOLD}{YELLOW}{}{RESET}", shell_name()),
