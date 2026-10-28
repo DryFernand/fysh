@@ -89,11 +89,53 @@ fn print_prompt(shell: &Shell) {
 
 /// Lanza un programa externo y espera a que termine.
 fn run_external(args: &[String]) -> i32 {
-    match Command::new(&args[0]).args(&args[1..]).status() {
+    let program = find_program(&args[0]).unwrap_or_else(|| args[0].clone().into());
+    match Command::new(&program).args(&args[1..]).status() {
         Ok(status) => status.code().unwrap_or(1),
         Err(_) => {
             eprintln!("fysh: comando no encontrado: {}", args[0]);
+            if let Some(cmd) = install_hint(&args[0]) {
+                eprintln!("{GRAY}Para instalarlo: {cmd}{RESET}");
+            }
             127
         }
+    }
+}
+
+/// En Windows busca el programa en el PATH probando .exe, .com, .cmd y .bat.
+/// Rust solo prueba .exe, y muchas herramientas (npm, code, agentes de IA) son .cmd.
+#[cfg(windows)]
+fn find_program(name: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::Path::new(name);
+    if path.extension().is_some() || path.components().count() > 1 {
+        return None; // ya trae extensión o ruta: se usa tal cual
+    }
+    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    let exts: Vec<&str> = exts
+        .split(';')
+        .filter(|e| [".com", ".exe", ".bat", ".cmd"].contains(&e.to_lowercase().as_str()))
+        .collect();
+    for dir in std::env::split_paths(&std::env::var_os("PATH")?) {
+        for ext in &exts {
+            let candidate = dir.join(format!("{name}{ext}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn find_program(_name: &str) -> Option<std::path::PathBuf> {
+    None // en Linux/Mac el sistema ya busca en el PATH
+}
+
+/// Cómo instalar los agentes de IA conocidos, si no están.
+fn install_hint(name: &str) -> Option<&'static str> {
+    match name {
+        "claude" if cfg!(windows) => Some("irm https://claude.ai/install.ps1 | iex"),
+        "claude" => Some("curl -fsSL https://claude.ai/install.sh | bash"),
+        _ => None,
     }
 }

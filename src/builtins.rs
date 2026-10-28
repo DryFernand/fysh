@@ -210,6 +210,7 @@ fn help() -> i32 {
     table::print(&["Comando", "Descripción"], &[Align::Left, Align::Left], &rows);
     println!("{GRAY}Variables: $NOMBRE usa una variable, $? es el código del último comando.{RESET}");
     println!("{GRAY}Cualquier otro comando se busca en el PATH (git, notepad, ping...).{RESET}");
+    println!("{GRAY}Agentes de IA: claude abre Claude Code en la carpeta actual.{RESET}");
     0
 }
 
