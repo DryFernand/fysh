@@ -3,39 +3,45 @@ use crate::{BOLD, GRAY, RED, RESET};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{cursor, queue};
+use chrono::{DateTime, Local};
 use std::fs;
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 /// Cuántas filas muestra el selector a la vez; con más, hace scroll.
 const VISIBLE: usize = 10;
 
-/// Una conversación guardada de Claude Code.
+/// Una conversación guardada de un agente (Claude Code, Antigravity...).
 struct Session {
     id: String,
     title: String,
-    modified: SystemTime,
+    modified: DateTime<Local>,
 }
 
 /// `claude` sin argumentos: muestra las conversaciones de esta carpeta para reanudar una,
 /// o abre una nueva. Con argumentos, fysh llama a claude directo (no pasa por aquí).
 pub fn claude_picker() -> i32 {
-    let sessions = list_sessions();
-    // Sin conversaciones previas, o sin teclado (entrada por pipe): abrir claude directo.
+    pick("claude", "--resume", list_claude_sessions())
+}
+
+/// `agy` (CLI de Antigravity) sin argumentos: lo mismo con sus conversaciones.
+pub fn agy_picker() -> i32 {
+    pick("agy", "--conversation", list_agy_sessions())
+}
+
+/// Muestra el selector y abre el agente: nueva conversación o `<program> <resume_flag> <id>`.
+fn pick(program: &str, resume_flag: &str, sessions: Vec<Session>) -> i32 {
+    // Sin conversaciones previas, o sin teclado (entrada por pipe): abrir el agente directo.
     if sessions.is_empty() || !io::stdin().is_terminal() {
-        return crate::run_external(&["claude".into()]);
+        return crate::run_external(&[program.into()]);
     }
 
     let mut options = vec![("+ Nueva conversación".to_string(), String::new())];
-    options.extend(sessions.iter().map(|s| {
-        let when = chrono::DateTime::<chrono::Local>::from(s.modified).format("%Y-%m-%d %H:%M");
-        (short(&s.title), when.to_string())
-    }));
+    options.extend(sessions.iter().map(|s| (short(&s.title), s.modified.format("%Y-%m-%d %H:%M").to_string())));
 
     match select(&options) {
-        Some(0) => crate::run_external(&["claude".into()]),
-        Some(i) => crate::run_external(&["claude".into(), "--resume".into(), sessions[i - 1].id.clone()]),
+        Some(0) => crate::run_external(&[program.into()]),
+        Some(i) => crate::run_external(&[program.into(), resume_flag.into(), sessions[i - 1].id.clone()]),
         None => 0,
     }
 }
@@ -104,8 +110,12 @@ fn render(options: &[(String, String)], selected: usize, top: usize) -> String {
     frame
 }
 
-/// Conversaciones de la carpeta actual, la más reciente primero.
-fn list_sessions() -> Vec<Session> {
+fn home() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
+}
+
+/// Conversaciones de Claude Code de la carpeta actual, la más reciente primero.
+fn list_claude_sessions() -> Vec<Session> {
     let Some(dir) = project_dir() else { return Vec::new() };
     let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
     let mut sessions: Vec<Session> = entries
@@ -117,7 +127,7 @@ fn list_sessions() -> Vec<Session> {
             Some(Session {
                 id: p.file_stem()?.to_string_lossy().into_owned(),
                 title,
-                modified: fs::metadata(&p).and_then(|m| m.modified()).ok()?,
+                modified: fs::metadata(&p).and_then(|m| m.modified()).ok()?.into(),
             })
         })
         .collect();
@@ -125,11 +135,77 @@ fn list_sessions() -> Vec<Session> {
     sessions
 }
 
+/// Conversaciones del CLI de Antigravity (agy) de la carpeta actual, la más reciente primero.
+/// agy guarda un resumen de cada una en ~/.gemini/antigravity-cli/conversation_summaries.db.
+/// Solo las del CLI (las de la app de escritorio viven aparte) y sin subagentes (nesting_depth 0).
+fn list_agy_sessions() -> Vec<Session> {
+    use rusqlite::{Connection, OpenFlags};
+    let (Some(home), Ok(cwd)) = (home(), std::env::current_dir()) else { return Vec::new() };
+    let db = home.join(".gemini").join("antigravity-cli").join("conversation_summaries.db");
+    let Ok(conn) = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY) else { return Vec::new() };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT conversation_id, title, preview, last_modified_time, workspace_uris
+         FROM conversation_summaries
+         WHERE nesting_depth = 0 AND app_data_dir = 'antigravity-cli'
+         ORDER BY last_modified_time DESC",
+    ) else {
+        return Vec::new();
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?))
+    });
+    let Ok(rows) = rows else { return Vec::new() };
+    rows.filter_map(Result::ok)
+        .filter(|(.., workspaces)| {
+            let uris: Vec<String> = serde_json::from_str(workspaces).unwrap_or_default();
+            uris.iter().filter_map(|u| uri_to_path(u)).any(|p| same_dir(&p, &cwd))
+        })
+        .filter_map(|(id, title, preview, modified, _)| {
+            // Formato: "2026-09-30 17:20:13.9133621+00:00"
+            let modified = DateTime::parse_from_str(&modified, "%Y-%m-%d %H:%M:%S%.f%:z").ok()?.with_timezone(&Local);
+            // Sin título ni vista previa = conversación abierta y nunca usada: no se muestra.
+            let title = if !title.is_empty() { title } else if !preview.is_empty() { preview } else { return None };
+            Some(Session { id, title, modified })
+        })
+        .collect()
+}
+
+/// "file:///c%3A/Users/x/Mi%20App" → "c:/Users/x/Mi App" (Windows) o "/home/x" (Linux/Mac).
+fn uri_to_path(uri: &str) -> Option<PathBuf> {
+    let rest = uri.strip_prefix("file://")?;
+    let mut bytes = Vec::new();
+    let mut it = rest.bytes();
+    while let Some(b) = it.next() {
+        if b == b'%' {
+            let hex = [it.next()?, it.next()?];
+            bytes.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
+        } else {
+            bytes.push(b);
+        }
+    }
+    let path = String::from_utf8(bytes).ok()?;
+    // En Windows viene como "/c:/...": quitar la barra inicial.
+    let path = match path.as_bytes() {
+        [b'/', _, b':', ..] => &path[1..],
+        _ => &path[..],
+    };
+    Some(PathBuf::from(path))
+}
+
+/// Compara carpetas sin importar mayúsculas (Windows) ni el tipo de barra.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_string();
+    if cfg!(windows) {
+        norm(a).eq_ignore_ascii_case(&norm(b))
+    } else {
+        norm(a) == norm(b)
+    }
+}
+
 /// Carpeta donde Claude Code guarda las conversaciones de la carpeta actual:
 /// ~/.claude/projects/<ruta con todo lo que no es letra o número cambiado por '-'>.
 fn project_dir() -> Option<PathBuf> {
-    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok()?;
-    let projects = Path::new(&home).join(".claude").join("projects");
+    let projects = home()?.join(".claude").join("projects");
     let cwd = std::env::current_dir().ok()?;
     let name = encode_path(&cwd.to_string_lossy());
     // En Windows la letra de la unidad puede venir en mayúscula o minúscula: comparar sin distinguir.
@@ -209,6 +285,17 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn convierte_uris_de_antigravity() {
+        let p = uri_to_path("file:///c%3A/Users/daryf/Documents/Organiza%20tu%20desarrollo").unwrap();
+        assert!(same_dir(&p, Path::new(r"C:\Users\daryf\Documents\Organiza tu desarrollo")));
+        let p = uri_to_path("file:///c:/Users/daryf/Documents/autospot-CRM").unwrap();
+        assert!(same_dir(&p, Path::new(r"C:\Users\daryf\Documents\autospot-CRM\")));
+        assert!(!same_dir(&p, Path::new(r"C:\Users\daryf\Documents\autospot")));
+        assert_eq!(uri_to_path("file:///home/dary/app").unwrap(), PathBuf::from("/home/dary/app"));
+        assert!(uri_to_path("https://x").is_none());
     }
 
     #[test]
