@@ -152,12 +152,13 @@ mod tests {
 
     #[test]
     fn coincide_con_la_ultima_carpeta() {
-        let crm = Path::new(r"C:\Users\daryf\Documents\autospot-CRM");
-        let front = Path::new(r"C:\Users\daryf\Documents\autospot-CRM\frontend");
-        assert!(matches(crm, &words(&["crm"])));
-        assert!(!matches(front, &words(&["crm"])));
-        assert!(matches(front, &words(&["crm", "front"])));
-        assert!(!matches(crm, &words(&["fysh"])));
+        // Rutas armadas con join: valen en Windows, Linux y Mac.
+        let crm = std::env::temp_dir().join("Documents").join("autospot-CRM");
+        let front = crm.join("frontend");
+        assert!(matches(&crm, &words(&["crm"])));
+        assert!(!matches(&front, &words(&["crm"])));
+        assert!(matches(&front, &words(&["crm", "front"])));
+        assert!(!matches(&crm, &words(&["fysh"])));
     }
 
     #[test]

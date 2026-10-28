@@ -5,7 +5,9 @@ fysh es una shell propia escrita en Rust (Windows, Linux y Mac).
 ## Publicar una versión nueva
 
 1. Cambia `version` en `Cargo.toml` (por ejemplo `0.2.0`) y corre `cargo build` para que se actualice `Cargo.lock`.
-2. Verifica con `cargo test`, luego haz commit y push a `main`.
+2. Verifica con `cargo test`, luego haz commit y push a `main`. Espera a que el workflow `ci`
+   (tests en Windows, Linux y Mac) termine en verde antes de crear el tag: los tests con rutas
+   de Windows (`C:\...`) fallan en Linux/Mac, márcalos con `#[cfg(windows)]` o arma las rutas con `join`.
 3. Crea el tag y súbelo; el número debe coincidir con el de `Cargo.toml`:
    ```
    git tag -a v0.2.0 -m "fysh v0.2.0"

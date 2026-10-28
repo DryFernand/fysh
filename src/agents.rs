@@ -246,13 +246,22 @@ mod tests {
 
     #[test]
     fn convierte_uris_de_antigravity() {
+        let p = uri_to_path("file:///home/dary/Mi%20App").unwrap();
+        assert_eq!(p, PathBuf::from("/home/dary/Mi App"));
+        assert!(same_dir(&p, Path::new("/home/dary/Mi App/")));
+        assert!(!same_dir(&p, Path::new("/home/dary/Mi")));
+        assert!(uri_to_path("https://x").is_none());
+    }
+
+    /// En Windows la unidad viene en minúscula ("c%3A") y no importan mayúsculas ni el tipo de barra.
+    #[cfg(windows)]
+    #[test]
+    fn convierte_uris_de_antigravity_en_windows() {
         let p = uri_to_path("file:///c%3A/Users/daryf/Documents/Organiza%20tu%20desarrollo").unwrap();
         assert!(same_dir(&p, Path::new(r"C:\Users\daryf\Documents\Organiza tu desarrollo")));
         let p = uri_to_path("file:///c:/Users/daryf/Documents/autospot-CRM").unwrap();
         assert!(same_dir(&p, Path::new(r"C:\Users\daryf\Documents\autospot-CRM\")));
         assert!(!same_dir(&p, Path::new(r"C:\Users\daryf\Documents\autospot")));
-        assert_eq!(uri_to_path("file:///home/dary/app").unwrap(), PathBuf::from("/home/dary/app"));
-        assert!(uri_to_path("https://x").is_none());
     }
 
     #[test]

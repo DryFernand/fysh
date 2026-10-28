@@ -1,0 +1,20 @@
+# En cada push a main (y en cada pull request) corre los tests en Windows, Linux y Mac.
+# Sirve para ver errores de un sistema antes de crear un tag de versión.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false # que un sistema falle no cancela los otros: se ven todos los errores
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test
