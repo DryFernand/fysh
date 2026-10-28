@@ -49,7 +49,7 @@ impl ConditionalEventHandler for FileSearch {
 /// Comandos propios de fysh y agentes, para completar la primera palabra.
 const COMMANDS: &[&str] = &[
     "cd", "cls", "clear", "dir", "ls", "pwd", "mkdir", "touch", "cat", "cp", "mv", "rm", "open", "echo", "set", "env",
-    "path", "history", "alias", "unalias", "config", "help", "exit", "z", "ssh", "tunel", "db", "run", "puertos", "procesos", "docker", "agent", "explica", "ins:", "actualizar", "update", "git", "claude",
+    "path", "history", "alias", "unalias", "config", "help", "exit", "z", "ssh", "tunel", "db", "http", "run", "puertos", "procesos", "docker", "agent", "explica", "ins:", "actualizar", "update", "git", "claude",
     "agy", "antigravity", "opencode",
 ];
 

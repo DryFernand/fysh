@@ -19,6 +19,7 @@ keyring = { version = "3", features = ["windows-native", "apple-native", "linux-
 nucleo-matcher = "0.3"
 ignore = "0.4"
 notify-rust = "4"
+ureq = "2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

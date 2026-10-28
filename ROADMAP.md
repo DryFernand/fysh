@@ -10,7 +10,7 @@ publicada, así siempre hay algo usable. Tamaño: **S** (horas), **M** (un día)
 | 2. Desarrollo diario ✅ | v0.4.0 | `run`, `puertos` + `procesos`, `docker` | M + S + M |
 | 3. Datos y servidores ✅ | v0.5.0 | `tunel`, `db` | M + M |
 | 4. Comodidad ✅ | v0.6.0 | Ctrl+R difuso, entorno por proyecto, notificaciones | M + M + S |
-| 5. APIs | v0.7.0 | `http` | M |
+| 5. APIs ✅ | v0.7.0 | `http` | M |
 
 El commit con el aviso de versión nueva y `actualizar` (sin publicar todavía) sale en la v0.3.0.
 

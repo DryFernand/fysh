@@ -12,6 +12,7 @@ mod files;
 mod fuzzy;
 mod git;
 mod history;
+mod http;
 mod jump;
 mod notify;
 mod parser;
