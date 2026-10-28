@@ -120,6 +120,15 @@ pub fn actualizar_cmd() -> i32 {
         return 1;
     }
 
+    // Probar que el ejecutable nuevo arranque ANTES de reemplazar el actual: en Windows, Smart App
+    // Control puede bloquear programas descargados sin firma digital, y quedarías sin fysh.
+    if let Err(reason) = runs(&new) {
+        let _ = std::fs::remove_file(&new);
+        eprintln!("{RED}La versión {latest} no se pudo abrir en este equipo:{RESET} {reason}");
+        eprintln!("{GRAY}Sigues con la v{CURRENT}, que funciona. Nada se reemplazó.{RESET}");
+        return 1;
+    }
+
     if let Err(e) = replace(&exe, &new) {
         let _ = std::fs::remove_file(&new);
         eprintln!("{RED}No se pudo reemplazar fysh:{RESET} {e}");
@@ -127,6 +136,24 @@ pub fn actualizar_cmd() -> i32 {
     }
     println!("{GREEN}✓{RESET} fysh actualizada a v{latest}. {GRAY}Cierra y vuelve a abrir fysh para usarla.{RESET}");
     0
+}
+
+/// ¿El ejecutable arranca? Lo corre con --version y espera "fysh x.y.z".
+fn runs(exe: &std::path::Path) -> Result<(), String> {
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(exe, std::fs::Permissions::from_mode(0o755));
+    }
+    match Command::new(exe).arg("--version").output() {
+        Ok(out) if out.status.success() && String::from_utf8_lossy(&out.stdout).starts_with("fysh ") => Ok(()),
+        Ok(out) => Err(format!("terminó con código {}", out.status.code().unwrap_or(-1))),
+        // 4551 = "An Application Control policy has blocked this file" (Smart App Control).
+        Err(e) if e.raw_os_error() == Some(4551) => {
+            Err("Windows lo bloqueó (Smart App Control no deja abrir programas sin firma digital que no conoce).".into())
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// Pone `new` en lugar de `exe` (que puede estar en uso).

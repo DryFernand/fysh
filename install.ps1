@@ -10,15 +10,26 @@ if (Get-Process fysh -ErrorAction SilentlyContinue) { throw "Cierra fysh antes d
 $dest = "$env:LOCALAPPDATA\Programs\fysh"
 New-Item -ItemType Directory -Force $dest | Out-Null
 
+# El nuevo se baja/copia a fysh.new.exe y solo reemplaza al actual si arranca: en Windows,
+# Smart App Control puede bloquear programas sin firma digital y te quedarías sin fysh.
+$new = "$dest\fysh.new.exe"
 if ($env:FYSH_EXE) {
-    Copy-Item $env:FYSH_EXE "$dest\fysh.exe" -Force
+    Copy-Item $env:FYSH_EXE $new -Force
     Copy-Item "$PSScriptRoot\fysh.ico" "$dest\fysh.ico" -Force
 } else {
     $url = "https://github.com/$repo/releases/latest/download/fysh-windows-x86_64.exe"
     Write-Host "Descargando $url"
-    Invoke-WebRequest $url -OutFile "$dest\fysh.exe" -UseBasicParsing
+    Invoke-WebRequest $url -OutFile $new -UseBasicParsing
     Invoke-WebRequest "https://raw.githubusercontent.com/$repo/main/fysh.ico" -OutFile "$dest\fysh.ico" -UseBasicParsing
 }
+$works = $false
+try { $works = ((& $new --version 2>$null) -like 'fysh *') } catch {}
+if (-not $works) {
+    Remove-Item $new -Force -ErrorAction SilentlyContinue
+    $keep = if (Test-Path "$dest\fysh.exe") { ' Tu fysh actual no se toco.' } else { '' }
+    throw "Windows no dejo abrir el fysh nuevo (Smart App Control bloquea programas sin firma digital que no conoce).$keep"
+}
+Move-Item $new "$dest\fysh.exe" -Force
 
 # --- Fuente JetBrains Mono (solo para este usuario, sin admin) ---
 $fontDir = "$env:LOCALAPPDATA\Microsoft\Windows\Fonts"
