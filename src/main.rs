@@ -1,3 +1,4 @@
+mod agents;
 mod builtins;
 mod parser;
 mod table;
@@ -88,7 +89,7 @@ fn print_prompt(shell: &Shell) {
 }
 
 /// Lanza un programa externo y espera a que termine.
-fn run_external(args: &[String]) -> i32 {
+pub fn run_external(args: &[String]) -> i32 {
     let program = find_program(&args[0]).unwrap_or_else(|| args[0].clone().into());
     match Command::new(&program).args(&args[1..]).status() {
         Ok(status) => status.code().unwrap_or(1),
