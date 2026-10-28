@@ -256,11 +256,7 @@ fn parse_version(text: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// ¿La versión `a` es más vieja que `b`? ("0.2.1" < "0.2.10")
-fn older(a: &str, b: &str) -> bool {
-    let nums = |v: &str| v.split('.').map(|p| p.parse::<u32>().unwrap_or(0)).collect::<Vec<_>>();
-    nums(a) < nums(b)
-}
+use crate::update::older;
 
 fn install_on(name: &str) -> bool {
     let install = format!("(curl -fsSL {INSTALL_URL} || wget -qO- {INSTALL_URL}) | sh");
@@ -742,7 +738,6 @@ mod tests {
         let banner = "\n  ███╗\n  v0.2.1 · escribe 'help' para ver los comandos";
         assert_eq!(parse_version(banner).as_deref(), Some("0.2.1"));
         assert_eq!(parse_version("sin versión"), None);
-        assert!(older("0.2.1", "0.2.2") && older("0.2.9", "0.2.10") && !older("0.3.0", "0.2.9") && !older("0.2.2", "0.2.2"));
     }
 
     #[test]

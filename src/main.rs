@@ -13,6 +13,7 @@ mod parser;
 mod picker;
 mod ssh;
 mod table;
+mod update;
 
 use rustyline::error::ReadlineError;
 use rustyline::history::FileHistory;
@@ -153,6 +154,10 @@ fn main() {
     println!("{RED}{BANNER}{RESET}");
     let place = remote().map(|h| format!(" · en {YELLOW}{h}{GRAY} (por ssh)")).unwrap_or_default();
     println!("  {GRAY}v{}{place} · escribe 'help' para ver los comandos{RESET}\n", env!("CARGO_PKG_VERSION"));
+    if let Some(notice) = update::notice() {
+        println!("{notice}");
+    }
+    update::check_in_background();
     aliases::load(&mut shell);
 
     // Editor de línea: Tab completa, ↑↓ recorren el historial, las sugerencias grises salen del historial.

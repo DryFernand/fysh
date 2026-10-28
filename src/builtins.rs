@@ -34,6 +34,7 @@ pub fn run(args: &[String], shell: &mut Shell) -> Option<i32> {
         "ssh" if rest.is_empty() => crate::ssh::ssh_cmd(),
         "ssh" => crate::ssh::ssh_args(rest),
         "agent" => crate::ai::agent_cmd(),
+        "actualizar" | "update" => crate::update::actualizar_cmd(),
         "explica" => crate::ai::explica_cmd(shell),
         cmd if cmd.starts_with("ins:") => {
             let task = shell.line.trim_start().strip_prefix("ins:").unwrap_or("").to_string();
@@ -247,6 +248,7 @@ fn help() -> i32 {
         ("agent", "Elige qué IA instalada es tu asistente (para explica e ins:)"),
         ("explica", "El asistente explica el último error y sugiere cómo arreglarlo"),
         ("ins: <tarea>", "El asistente escribe el comando para una tarea (ins: borrar rama x)"),
+        ("actualizar", "Instala la última versión de fysh (también: update)"),
         ("help", "Muestra esta ayuda"),
         ("exit [código]", "Cierra fysh"),
     ]
