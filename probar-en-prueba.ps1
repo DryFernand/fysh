@@ -16,7 +16,8 @@ cd ~
 if [ -d fysh-src ]; then cd fysh-src && git fetch -q origin && git reset -q --hard origin/main; else git clone -q https://github.com/DryFernand/fysh.git fysh-src && cd fysh-src; fi
 echo "Compilando $(git log --oneline -1)..."
 cargo build --release 2>&1 | tail -3
-mkdir -p ~/.local/bin && cp target/release/fysh ~/.local/bin/fysh
+# Copiar y renombrar (no sobrescribir): funciona aunque fysh esté abierto en el contenedor.
+mkdir -p ~/.local/bin && cp target/release/fysh ~/.local/bin/fysh.new && mv -f ~/.local/bin/fysh.new ~/.local/bin/fysh
 ~/.local/bin/fysh --version
 '@
 $tmp = Join-Path $env:TEMP 'fysh-build.sh'
