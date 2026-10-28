@@ -7,10 +7,44 @@ use rustyline::completion::{Completer, FilenameCompleter, Pair};
 use rustyline::highlight::Highlighter;
 use rustyline::hint::{Hinter, HistoryHinter};
 use rustyline::validate::Validator;
-use rustyline::{Context, Helper};
+use rustyline::{Cmd, ConditionalEventHandler, Context, Event, EventContext, Helper, Movement, RepeatCount};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+
+/// Ctrl+R: buscar en el historial (sin repetidos, lo más reciente arriba) y dejarlo en la línea.
+pub struct HistorySearch {
+    /// Lo actualiza el bucle principal después de cada comando.
+    pub entries: Arc<Mutex<Vec<String>>>,
+}
+
+impl ConditionalEventHandler for HistorySearch {
+    fn handle(&self, _evt: &Event, _n: RepeatCount, _positive: bool, ctx: &EventContext) -> Option<Cmd> {
+        let items = self.entries.lock().ok()?.clone();
+        if items.is_empty() {
+            return Some(Cmd::Noop);
+        }
+        match crate::fuzzy::search("historial", &items, ctx.line(), true) {
+            Some(cmd) => Some(Cmd::Replace(Movement::WholeLine, Some(cmd))),
+            None => Some(Cmd::Repaint),
+        }
+    }
+}
+
+/// Ctrl+T: buscar un archivo de la carpeta (respetando .gitignore) e insertarlo donde está el cursor.
+pub struct FileSearch;
+
+impl ConditionalEventHandler for FileSearch {
+    fn handle(&self, _evt: &Event, _n: RepeatCount, _positive: bool, _ctx: &EventContext) -> Option<Cmd> {
+        let files = crate::fuzzy::project_files(20_000);
+        match crate::fuzzy::search("archivos", &files, "", true) {
+            Some(f) if f.contains(' ') => Some(Cmd::Insert(1, format!("\"{f}\" "))),
+            Some(f) => Some(Cmd::Insert(1, format!("{f} "))),
+            None => Some(Cmd::Repaint),
+        }
+    }
+}
 
 /// Comandos propios de fysh y agentes, para completar la primera palabra.
 const COMMANDS: &[&str] = &[

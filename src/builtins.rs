@@ -288,6 +288,9 @@ fn help() -> i32 {
     println!("{GRAY}Variables: $NOMBRE usa una variable, $? es el código del último comando.{RESET}");
     println!("{GRAY}Cualquier otro comando se busca en el PATH (git, notepad, ping...).{RESET}");
     println!("{GRAY}Combinar: a | b (pipe) · a > f, a >> f, a 2> f, a 2>&1, a < f · a && b, a || b, a ; b · *.txt{RESET}");
+    println!("{GRAY}Teclas: Tab completa · ↑↓ historial · Ctrl+R buscar en el historial · Ctrl+T buscar un archivo{RESET}");
+    println!("{GRAY}Proyectos: al entrar se activa su .venv y se ofrece cargar su .env. Comandos de más de 30 s{RESET}");
+    println!("{GRAY}avisan al terminar si no estás mirando (set FYSH_AVISO_SEGUNDOS=60 para cambiarlo, 0 lo apaga).{RESET}");
     println!("{GRAY}Git: status, log y branch se muestran en tablas; switch, checkout, add, show y commit{RESET}");
     println!("{GRAY}sin argumentos abren un selector. Con argumentos, git funciona como siempre.{RESET}");
     println!("{GRAY}Agentes de IA: claude (Claude Code), agy o antigravity (Antigravity) y opencode (OpenCode){RESET}");

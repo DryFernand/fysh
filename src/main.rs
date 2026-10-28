@@ -9,12 +9,15 @@ mod docker;
 mod envvars;
 mod exec;
 mod files;
+mod fuzzy;
 mod git;
 mod history;
 mod jump;
+mod notify;
 mod parser;
 mod picker;
 mod procs;
+mod projenv;
 mod run;
 mod ssh;
 mod table;
@@ -23,8 +26,9 @@ mod update;
 
 use rustyline::error::ReadlineError;
 use rustyline::history::FileHistory;
-use rustyline::{CompletionType, Config, Editor};
+use rustyline::{CompletionType, Config, Editor, EventHandler, KeyEvent};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -205,9 +209,22 @@ fn main() {
     if let Some(h) = &history_file {
         editor.load_history(h).ok();
     }
+    // Ctrl+R: historial con búsqueda difusa. Ctrl+T: buscar un archivo e insertarlo.
+    let history_items = Arc::new(Mutex::new(Vec::new()));
+    let refresh_history = |editor: &Editor<complete::FyshHelper, FileHistory>| {
+        let unique = history::group(editor.history().iter().map(String::as_str), None).into_iter().map(|(c, _)| c).collect();
+        if let Ok(mut items) = history_items.lock() {
+            *items = unique;
+        }
+    };
+    refresh_history(&editor);
+    editor.bind_sequence(KeyEvent::ctrl('R'), EventHandler::Conditional(Box::new(complete::HistorySearch { entries: history_items.clone() })));
+    editor.bind_sequence(KeyEvent::ctrl('T'), EventHandler::Conditional(Box::new(complete::FileSearch)));
+
     let mut last_dir = std::env::current_dir().ok();
     if let Some(d) = &last_dir {
         jump::visit(d);
+        projenv::on_dir_change(d);
     }
 
     while shell.running {
@@ -240,14 +257,17 @@ fn main() {
         }
 
         execute(&mut shell, &line);
+        notify::after_command(&line, shell.last_status, shell.last_duration);
+        refresh_history(&editor);
         if let Some(helper) = editor.helper() {
             *helper.aliases.borrow_mut() = shell.aliases.keys().cloned().collect();
         }
-        // Registrar la carpeta si cambió, para `z`.
+        // Si cambió la carpeta: anotarla para `z` y activar el entorno del proyecto (.env, .venv).
         let dir = std::env::current_dir().ok();
         if dir != last_dir {
             if let Some(d) = &dir {
                 jump::visit(d);
+                projenv::on_dir_change(d);
             }
             last_dir = dir;
         }
@@ -286,7 +306,7 @@ fn prompt(shell: &Shell) -> String {
         0 => String::new(),
         code => format!("{RED}[{code}] "),
     };
-    let git = git::prompt_segment();
+    let git = format!("{}{}", git::prompt_segment(), projenv::prompt_segment());
     // Túneles activos (siguen vivos aunque se cierre fysh): que no se olviden.
     let tunnels = match tunnel::active_count() {
         0 => String::new(),
@@ -302,7 +322,7 @@ fn prompt(shell: &Shell) -> String {
 }
 
 /// 12s · 2m 05s · 1h 03m
-fn format_duration(d: Duration) -> String {
+pub fn format_duration(d: Duration) -> String {
     let s = d.as_secs();
     match s {
         0..=59 => format!("{s}s"),

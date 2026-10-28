@@ -9,7 +9,7 @@ publicada, así siempre hay algo usable. Tamaño: **S** (horas), **M** (un día)
 | 1. Shell completa ✅ | v0.3.0 | Pipes, redirecciones, `&&` `\|\|` `;`, comodines | L |
 | 2. Desarrollo diario ✅ | v0.4.0 | `run`, `puertos` + `procesos`, `docker` | M + S + M |
 | 3. Datos y servidores ✅ | v0.5.0 | `tunel`, `db` | M + M |
-| 4. Comodidad | v0.6.0 | Ctrl+R difuso, entorno por proyecto, notificaciones | M + M + S |
+| 4. Comodidad ✅ | v0.6.0 | Ctrl+R difuso, entorno por proyecto, notificaciones | M + M + S |
 | 5. APIs | v0.7.0 | `http` | M |
 
 El commit con el aviso de versión nueva y `actualizar` (sin publicar todavía) sale en la v0.3.0.
@@ -132,5 +132,5 @@ El commit con el aviso de versión nueva y `actualizar` (sin publicar todavía) 
 
 - `db`: solo MySQL/MariaDB y PostgreSQL (decidido).
 - `tunel`: los túneles quedan activos al cerrar fysh; se apagan con `tunel` (decidido).
-- Notificaciones: ¿umbral de 30 s está bien? (pendiente)
+- Notificaciones: 30 s por defecto, configurable con `set FYSH_AVISO_SEGUNDOS=N` (0 = apagadas).
 - Publicar: ninguna versión se publica sin confirmación del usuario.
