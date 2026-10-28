@@ -11,8 +11,8 @@ use std::cell::RefCell;
 
 /// Comandos propios de fysh y agentes, para completar la primera palabra.
 const COMMANDS: &[&str] = &[
-    "cd", "cls", "clear", "dir", "ls", "pwd", "echo", "set", "env", "path", "history", "help", "exit", "git", "claude", "agy",
-    "antigravity", "opencode",
+    "cd", "cls", "clear", "dir", "ls", "pwd", "mkdir", "touch", "cat", "cp", "mv", "rm", "open", "echo", "set", "env",
+    "path", "history", "alias", "unalias", "config", "help", "exit", "git", "claude", "agy", "antigravity", "opencode",
 ];
 
 /// Catálogo de subcomandos de git.
@@ -34,13 +34,20 @@ pub struct FyshHelper {
     /// Prompt con colores. rustyline mide el ancho con la versión sin colores
     /// y muestra esta, así el cursor queda en su lugar.
     pub colored_prompt: RefCell<String>,
+    /// Nombres de los alias, para completarlos como comandos.
+    pub aliases: RefCell<Vec<String>>,
     files: FilenameCompleter,
     hinter: HistoryHinter,
 }
 
 impl FyshHelper {
     pub fn new() -> Self {
-        Self { colored_prompt: RefCell::new(String::new()), files: FilenameCompleter::new(), hinter: HistoryHinter::new() }
+        Self {
+            colored_prompt: RefCell::new(String::new()),
+            aliases: RefCell::new(Vec::new()),
+            files: FilenameCompleter::new(),
+            hinter: HistoryHinter::new(),
+        }
     }
 }
 
@@ -57,10 +64,11 @@ fn matching(prefix: &str, options: impl IntoIterator<Item = String>) -> Vec<Pair
 
 /// Qué completar para las palabras ya escritas (sin la que se está escribiendo).
 /// None = completar nombres de archivo.
-fn candidates(words: &[&str], current: &str) -> Option<Vec<Pair>> {
+fn candidates(words: &[&str], current: &str, aliases: &[String]) -> Option<Vec<Pair>> {
     let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     match words {
-        [] => Some(matching(current, owned(COMMANDS))),
+        [] => Some(matching(current, owned(COMMANDS).into_iter().chain(aliases.iter().cloned()))),
+        ["unalias"] => Some(matching(current, aliases.iter().cloned())),
         ["git"] => Some(matching(current, owned(GIT_SUBCOMMANDS))),
         ["git", sub, ..] => {
             let mut opts = Vec::new();
@@ -86,7 +94,7 @@ impl Completer for FyshHelper {
         let start = before.rfind(char::is_whitespace).map_or(0, |i| i + 1);
         let current = &before[start..];
         let words: Vec<&str> = before[..start].split_whitespace().collect();
-        match candidates(&words, current) {
+        match candidates(&words, current, &self.aliases.borrow()) {
             Some(list) => Ok((start, list)),
             None => self.files.complete(line, pos, ctx),
         }
@@ -128,9 +136,12 @@ mod tests {
 
     #[test]
     fn completa_comandos_y_subcomandos_de_git() {
-        assert_eq!(names(candidates(&[], "cl")), ["cls", "clear", "claude"]);
-        assert_eq!(names(candidates(&["git"], "che")), ["checkout", "cherry-pick"]);
-        assert_eq!(names(candidates(&["git"], "sta")), ["stash", "status"]);
-        assert!(candidates(&["notepad"], "a").is_none()); // archivos
+        let aliases = vec!["crm".to_string(), "gs".to_string()];
+        assert_eq!(names(candidates(&[], "cl", &[])), ["cls", "clear", "claude"]);
+        assert_eq!(names(candidates(&[], "cr", &aliases)), ["crm"]);
+        assert_eq!(names(candidates(&["unalias"], "g", &aliases)), ["gs"]);
+        assert_eq!(names(candidates(&["git"], "che", &[])), ["checkout", "cherry-pick"]);
+        assert_eq!(names(candidates(&["git"], "sta", &[])), ["stash", "status"]);
+        assert!(candidates(&["notepad"], "a", &[]).is_none()); // archivos
     }
 }

@@ -1,7 +1,10 @@
 mod agents;
+mod aliases;
+mod ask;
 mod builtins;
 mod complete;
 mod envvars;
+mod files;
 mod git;
 mod history;
 mod parser;
@@ -31,14 +34,40 @@ const BANNER: &str = r"
   ██║        ██║   ███████║██║  ██║
   ╚═╝        ╚═╝   ╚══════╝╚═╝  ╚═╝";
 
-/// Estado compartido de la shell. Agrega campos aquí (aliases, historial, etc.).
+/// Estado compartido de la shell. Agrega campos aquí.
 pub struct Shell {
     pub last_status: i32,
     pub running: bool,
+    /// alias → comando (ordenados por nombre).
+    pub aliases: std::collections::BTreeMap<String, String>,
+    /// Línea tal como se escribió (alias la necesita para no perder comillas).
+    pub line: String,
+    /// true mientras se ejecuta ~/.fyshrc al abrir fysh.
+    pub loading_rc: bool,
+}
+
+impl Shell {
+    pub fn new() -> Self {
+        Shell { last_status: 0, running: true, aliases: Default::default(), line: String::new(), loading_rc: false }
+    }
+}
+
+/// Ejecuta una línea: expande alias y corre el comando interno o el programa externo.
+pub fn execute(shell: &mut Shell, line: &str) {
+    let args = parser::parse(line, shell);
+    if args.is_empty() {
+        return;
+    }
+    let args = aliases::expand(shell, args);
+    shell.line = line.to_string();
+    shell.last_status = match builtins::run(&args, shell) {
+        Some(code) => code,
+        None => run_external(&args),
+    };
 }
 
 fn main() {
-    let mut shell = Shell { last_status: 0, running: true };
+    let mut shell = Shell::new();
 
     // Ctrl+C mientras corre un programa lo corta a él, no a la shell.
     ctrlc::set_handler(|| {}).ok();
@@ -46,6 +75,7 @@ fn main() {
     print!("\x1b]0;fysh\x07"); // título de la ventana
     println!("{RED}{BANNER}{RESET}");
     println!("  {GRAY}v{} · escribe 'help' para ver los comandos{RESET}\n", env!("CARGO_PKG_VERSION"));
+    aliases::load(&mut shell);
 
     // Editor de línea: Tab completa, ↑↓ recorren el historial, las sugerencias grises salen del historial.
     let config = Config::builder()
@@ -87,23 +117,19 @@ fn main() {
             editor.save_history(h).ok();
         }
 
-        let args = parser::parse(&line, &shell);
-        if args.is_empty() {
-            continue;
-        }
-
         // `history [texto]` vive aquí porque necesita el historial del editor de línea.
-        if args[0] == "history" && args.len() <= 2 {
+        let args = parser::parse(&line, &shell);
+        if args.first().is_some_and(|a| a == "history") && args.len() <= 2 {
             let entries = editor.history().iter().map(String::as_str);
             pending = history::pick(entries, args.get(1).map(String::as_str));
             shell.last_status = 0;
             continue;
         }
 
-        shell.last_status = match builtins::run(&args, &mut shell) {
-            Some(code) => code,
-            None => run_external(&args),
-        };
+        execute(&mut shell, &line);
+        if let Some(helper) = editor.helper() {
+            *helper.aliases.borrow_mut() = shell.aliases.keys().cloned().collect();
+        }
     }
     std::process::exit(shell.last_status);
 }

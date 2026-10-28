@@ -81,7 +81,8 @@ mod tests {
 
     #[test]
     fn parsing() {
-        let sh = Shell { last_status: 3, running: true };
+        let mut sh = Shell::new();
+        sh.last_status = 3;
         std::env::set_var("FYSH_T", "hola");
         assert_eq!(parse("  ls   -la  ", &sh), ["ls", "-la"]);
         assert_eq!(parse(r#"echo "a b" 'c $X'"#, &sh), ["echo", "a b", "c $X"]);

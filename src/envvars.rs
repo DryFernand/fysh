@@ -53,10 +53,10 @@ fn split_list(value: &str) -> Vec<String> {
 #[cfg(windows)]
 mod imp {
     use super::{expand, split_list};
+    use crate::ask::{ask, confirm};
     use crate::picker;
     use crate::table::{self, truncate, Align};
     use crate::{BOLD, GRAY, GREEN, RED, RESET, YELLOW};
-    use rustyline::DefaultEditor;
     use std::io::{self, IsTerminal, Write};
     use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_EXPAND_SZ, REG_SZ};
     use winreg::{RegKey, RegValue, HKEY};
@@ -222,20 +222,6 @@ mod imp {
                 1
             }
         }
-    }
-
-    // ---------- preguntas en la terminal ----------
-
-    /// Pide un texto ya escrito con `initial` para editarlo. None si se cancela (Ctrl+C / vacío).
-    fn ask(prompt: &str, initial: &str) -> Option<String> {
-        let mut ed = DefaultEditor::new().ok()?;
-        let text = ed.readline_with_initial(prompt, (initial, "")).ok()?;
-        let text = text.trim().to_string();
-        (!text.is_empty()).then_some(text)
-    }
-
-    fn confirm(question: &str) -> bool {
-        ask(&format!("{question} [s/N] "), "").is_some_and(|a| a.eq_ignore_ascii_case("s") || a.eq_ignore_ascii_case("si"))
     }
 
     fn pick_scope() -> Option<Scope> {

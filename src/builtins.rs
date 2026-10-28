@@ -17,6 +17,19 @@ pub fn run(args: &[String], shell: &mut Shell) -> Option<i32> {
         "cls" | "clear" => cls(),
         "dir" | "ls" => dir(rest),
         "help" => help(),
+        "mkdir" => crate::files::mkdir(rest),
+        "rm" => crate::files::rm(rest),
+        "cp" => crate::files::cp(rest),
+        "mv" => crate::files::mv(rest),
+        "cat" => crate::files::cat(rest),
+        "touch" => crate::files::touch(rest),
+        "open" => crate::files::open(rest),
+        "alias" => {
+            let raw = shell.line.trim_start().strip_prefix("alias").unwrap_or("").to_string();
+            crate::aliases::alias_cmd(shell, &raw)
+        }
+        "unalias" => crate::aliases::unalias_cmd(shell, rest),
+        "config" => crate::aliases::config_cmd(shell),
         "env" if rest.is_empty() => crate::envvars::env_cmd(),
         "path" if rest.is_empty() => crate::envvars::path_cmd(),
         "claude" if rest.is_empty() => crate::agents::claude_picker(),
@@ -174,7 +187,7 @@ fn dir(args: &[String]) -> i32 {
 }
 
 /// Mensajes de error del sistema en español; los poco comunes quedan como los da el sistema.
-fn error_msg(e: &io::Error) -> String {
+pub fn error_msg(e: &io::Error) -> String {
     match e.kind() {
         io::ErrorKind::NotFound => "no existe".into(),
         io::ErrorKind::PermissionDenied => "acceso denegado".into(),
@@ -205,11 +218,21 @@ fn help() -> i32 {
         ("dir [carpeta]", "Lista el contenido de una carpeta (también: ls)"),
         ("cls", "Limpia la pantalla (también: clear)"),
         ("pwd", "Muestra la carpeta actual"),
+        ("mkdir <carpeta>", "Crea carpetas"),
+        ("touch <archivo>", "Crea un archivo vacío (o actualiza su fecha)"),
+        ("cat <archivo>", "Muestra el contenido de un archivo"),
+        ("cp <origen> <destino>", "Copia archivos o carpetas"),
+        ("mv <origen> <destino>", "Mueve o renombra archivos o carpetas"),
+        ("rm <archivo>", "Manda archivos o carpetas a la papelera"),
+        ("open [ruta]", "Abre la carpeta en el Explorador (o un archivo/URL)"),
         ("echo [texto]", "Imprime texto"),
         ("set [NOMBRE=valor]", "Define una variable solo para esta sesión; sin argumentos, las lista"),
         ("env", "Variables de entorno permanentes: ver, crear, editar o borrar"),
         ("path", "Carpetas del PATH: agregar, editar, quitar u ordenar"),
         ("history [texto]", "Comandos usados, sin repetir; el elegido queda escrito en la línea"),
+        ("alias [n = comando]", "Atajos: sin nada los lista; con nombre = comando crea uno"),
+        ("unalias <nombre>", "Borra un alias"),
+        ("config", "Edita ~/.fyshrc (se ejecuta al abrir fysh) y lo recarga"),
         ("help", "Muestra esta ayuda"),
         ("exit [código]", "Cierra fysh"),
     ]
