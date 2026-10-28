@@ -11,7 +11,7 @@ use std::cell::RefCell;
 
 /// Comandos propios de fysh y agentes, para completar la primera palabra.
 const COMMANDS: &[&str] = &[
-    "cd", "cls", "clear", "dir", "ls", "pwd", "echo", "set", "env", "path", "help", "exit", "git", "claude", "agy",
+    "cd", "cls", "clear", "dir", "ls", "pwd", "echo", "set", "env", "path", "history", "help", "exit", "git", "claude", "agy",
     "antigravity", "opencode",
 ];
 

@@ -209,6 +209,7 @@ fn help() -> i32 {
         ("set [NOMBRE=valor]", "Define una variable solo para esta sesión; sin argumentos, las lista"),
         ("env", "Variables de entorno permanentes: ver, crear, editar o borrar"),
         ("path", "Carpetas del PATH: agregar, editar, quitar u ordenar"),
+        ("history [texto]", "Comandos usados, sin repetir; el elegido queda escrito en la línea"),
         ("help", "Muestra esta ayuda"),
         ("exit [código]", "Cierra fysh"),
     ]

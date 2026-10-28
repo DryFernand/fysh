@@ -3,6 +3,7 @@ mod builtins;
 mod complete;
 mod envvars;
 mod git;
+mod history;
 mod parser;
 mod picker;
 mod table;
@@ -60,27 +61,42 @@ fn main() {
         }
     };
     editor.set_helper(Some(complete::FyshHelper::new()));
-    let history = history_path();
-    if let Some(h) = &history {
+    let history_file = history_path();
+    if let Some(h) = &history_file {
         editor.load_history(h).ok();
     }
+    // Comando elegido en `history`: aparece ya escrito en la siguiente línea.
+    let mut pending: Option<String> = None;
 
     while shell.running {
         let colored = prompt(&shell);
         if let Some(helper) = editor.helper() {
             *helper.colored_prompt.borrow_mut() = colored.clone();
         }
-        let line = match editor.readline(&table::strip_ansi(&colored)) {
+        let plain = table::strip_ansi(&colored);
+        let read = match pending.take() {
+            Some(cmd) => editor.readline_with_initial(&plain, (&cmd, "")),
+            None => editor.readline(&plain),
+        };
+        let line = match read {
             Ok(line) => line,
             Err(ReadlineError::Interrupted) => continue, // Ctrl+C en el prompt: línea nueva
             Err(_) => break,                             // Ctrl+D / Ctrl+Z o fin de entrada
         };
-        if let Some(h) = &history {
+        if let Some(h) = &history_file {
             editor.save_history(h).ok();
         }
 
         let args = parser::parse(&line, &shell);
         if args.is_empty() {
+            continue;
+        }
+
+        // `history [texto]` vive aquí porque necesita el historial del editor de línea.
+        if args[0] == "history" && args.len() <= 2 {
+            let entries = editor.history().iter().map(String::as_str);
+            pending = history::pick(entries, args.get(1).map(String::as_str));
+            shell.last_status = 0;
             continue;
         }
 
