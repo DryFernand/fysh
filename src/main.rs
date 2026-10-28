@@ -1,6 +1,8 @@
 mod agents;
 mod builtins;
+mod git;
 mod parser;
+mod picker;
 mod table;
 
 use std::io::{self, Write};
@@ -15,6 +17,8 @@ static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 pub const RED: &str = "\x1b[38;2;255;70;70m";
 pub const GRAY: &str = "\x1b[38;2;140;145;155m";
 pub const BLUE: &str = "\x1b[38;2;97;175;239m";
+pub const GREEN: &str = "\x1b[38;2;80;250;123m";
+pub const YELLOW: &str = "\x1b[38;2;241;196;15m";
 pub const BOLD: &str = "\x1b[1m";
 pub const RESET: &str = "\x1b[0m";
 
@@ -84,7 +88,8 @@ fn print_prompt(shell: &Shell) {
         0 => String::new(),
         code => format!("{RED}[{code}] "),
     };
-    print!("{BOLD}{RED}fysh{RESET} {GRAY}{cwd}{RESET} {status}{RED}❯{RESET} ");
+    let git = git::prompt_segment();
+    print!("{BOLD}{RED}fysh{RESET} {GRAY}{cwd}{RESET}{git} {status}{RED}❯{RESET} ");
     io::stdout().flush().ok();
 }
 

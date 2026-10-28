@@ -49,6 +49,15 @@ fn line(widths: &[usize], align: &[Align], cells: &[String]) -> String {
     out + "\n"
 }
 
+/// Recorta el texto a `max` caracteres visibles, terminando en "…" si se cortó.
+pub fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() > max {
+        format!("{}…", text.chars().take(max - 1).collect::<String>())
+    } else {
+        text.to_string()
+    }
+}
+
 /// Ancho visible del texto: ignora los códigos de color ANSI (\x1b[...m).
 pub fn width(s: &str) -> usize {
     let mut n = 0;
