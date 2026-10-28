@@ -6,7 +6,7 @@ use crate::{BLUE, GREEN, RED, RESET, YELLOW};
 use rustyline::completion::{Completer, FilenameCompleter, Pair};
 use rustyline::highlight::Highlighter;
 use rustyline::hint::{Hinter, HistoryHinter};
-use rustyline::validate::Validator;
+use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 use rustyline::{Cmd, ConditionalEventHandler, Context, Event, EventContext, Helper, Movement, RepeatCount};
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -50,7 +50,8 @@ impl ConditionalEventHandler for FileSearch {
 const COMMANDS: &[&str] = &[
     "cd", "cls", "clear", "dir", "ls", "pwd", "mkdir", "touch", "cat", "cp", "mv", "rm", "open", "echo", "set", "env",
     "path", "history", "alias", "unalias", "config", "help", "exit", "z", "ssh", "tunel", "db", "http", "run", "puertos", "procesos", "docker", "agent", "explica", "ins:", "actualizar", "update", "git", "claude",
-    "agy", "antigravity", "opencode",
+    "agy", "antigravity", "opencode", "if", "else", "end", "for", "while", "function", "break", "continue", "return",
+    "source", "test", "true", "false", "math", "read", "jobs", "fg",
 ];
 
 /// Catálogo de subcomandos de git.
@@ -142,6 +143,7 @@ fn colorize(line: &str, is_command: impl Fn(&str) -> bool) -> String {
     while i < chars.len() {
         let c = chars[i];
         if c.is_whitespace() {
+            at_command |= c == '\n';
             out.push(c);
             i += 1;
             continue;
@@ -162,7 +164,8 @@ fn colorize(line: &str, is_command: impl Fn(&str) -> bool) -> String {
             let word: String = chars[start..i].iter().collect();
             let color = if is_command(&word) { GREEN } else { RED };
             out += &format!("{color}{word}{RESET}");
-            at_command = false;
+            // Después de if / else / while viene otro comando (la condición).
+            at_command = matches!(word.as_str(), "if" | "else" | "while");
             continue;
         }
         if c == '"' || c == '\'' {
@@ -276,7 +279,12 @@ impl Highlighter for FyshHelper {
     }
 }
 
-impl Validator for FyshHelper {}
+impl Validator for FyshHelper {
+    /// Un bloque sin cerrar (if/for/while/function sin end): Enter agrega otra línea en vez de ejecutar.
+    fn validate(&self, ctx: &mut ValidationContext) -> rustyline::Result<ValidationResult> {
+        Ok(if crate::script::incomplete(ctx.input()) { ValidationResult::Incomplete } else { ValidationResult::Valid(None) })
+    }
+}
 impl Helper for FyshHelper {}
 
 #[cfg(test)]

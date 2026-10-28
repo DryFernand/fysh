@@ -5,7 +5,8 @@
 //! propios (dir, git status en tabla…) también funcionan, y su salida pasa por un filtro que
 //! quita los colores cuando va a un archivo o a otro programa.
 
-use crate::parser::{self, Op, Pipeline, Sink};
+use crate::parser::{self, Pipeline, Sink, Step};
+use crate::script::{self, ParseError};
 use crate::{builtins, run_external, Shell};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -13,35 +14,46 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-/// Ejecuta la línea completa y devuelve el código del último comando que corrió.
+/// Ejecuta la línea completa (puede tener bloques if/for/while de varias líneas) y devuelve
+/// el código del último comando que corrió.
 pub fn run_line(shell: &mut Shell, line: &str) -> i32 {
-    let parsed = match parser::parse_line(line, &shell.aliases) {
-        Ok(p) => p,
+    let nodes = match parser::parse_line(line, &shell.aliases).map_err(ParseError::Error).and_then(script::parse) {
+        Ok(n) => n,
         Err(e) => {
-            eprintln!("{e}");
+            match e {
+                ParseError::Incomplete => eprintln!("fysh: falta 'end' para cerrar el bloque"),
+                ParseError::Error(msg) => eprintln!("{msg}"),
+            }
             return 2;
         }
     };
-    let mut status = 0;
-    for (op, pipeline) in parsed {
-        match op {
-            Op::And if status != 0 => continue,
-            Op::Or if status == 0 => continue,
-            _ => {}
-        }
-        status = run_pipeline(shell, &pipeline);
-        shell.last_status = status; // el siguiente comando ve este $?
-        if !shell.running {
-            break;
-        }
-    }
+    let status = script::run(shell, &nodes);
+    shell.flow = script::Flow::Normal; // break/continue/return fuera de lugar no pasan a la línea siguiente
     status
 }
 
-/// Ejecuta un comando sin pipes ni redirecciones dentro de fysh (o el programa externo).
+/// Un pipeline: en primer plano, o en segundo plano si terminaba en `&`.
+pub fn run_step(shell: &mut Shell, step: &Step) -> i32 {
+    if step.background {
+        return crate::jobs::start(shell, &step.pipeline);
+    }
+    run_pipeline(shell, &step.pipeline)
+}
+
+/// Ejecuta un comando sin pipes ni redirecciones dentro de fysh: una función, un script .fysh,
+/// un comando propio o el programa externo.
 pub fn run_args(shell: &mut Shell, args: &[String]) -> i32 {
     if args.is_empty() {
         return shell.last_status;
+    }
+    if let Some(body) = shell.functions.get(&args[0]).cloned() {
+        return script::call(shell, &body, &args[1..]);
+    }
+    // `./tarea.fysh a b`: corre en otro fysh, como un script de bash (su cd no cambia esta carpeta).
+    if args[0].ends_with(".fysh") && std::path::Path::new(&args[0]).is_file() {
+        return std::env::current_exe()
+            .and_then(|exe| Command::new(exe).args(args).status())
+            .map_or(1, |s| s.code().unwrap_or(1));
     }
     builtins::run(args, shell).unwrap_or_else(|| run_external(args))
 }
@@ -79,6 +91,39 @@ fn open_sink(path: &str, append: bool) -> std::io::Result<File> {
 }
 
 fn spawn_pipeline(shell: &Shell, cmds: &Pipeline, expanded: &[Vec<String>]) -> std::io::Result<i32> {
+    let (children, pumps) = spawn_stages(shell, cmds, expanded, false)?;
+    let mut code = 0;
+    for mut child in children {
+        code = child.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
+    }
+    for p in pumps {
+        let _ = p.join();
+    }
+    Ok(code)
+}
+
+/// Segundo plano: el proceso no recibe el Ctrl+C de la terminal.
+fn detach(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+}
+
+/// Lanza las etapas conectadas. En segundo plano no leen de la terminal ni reciben su Ctrl+C.
+pub fn spawn_stages(
+    shell: &Shell,
+    cmds: &Pipeline,
+    expanded: &[Vec<String>],
+    background: bool,
+) -> std::io::Result<(Vec<Child>, Vec<JoinHandle<()>>)> {
     let exe = std::env::current_exe()?;
     let mut children: Vec<Child> = Vec::new();
     let mut pumps: Vec<JoinHandle<()>> = Vec::new();
@@ -92,7 +137,11 @@ fn spawn_pipeline(shell: &Shell, cmds: &Pipeline, expanded: &[Vec<String>]) -> s
                 let path = parser::expand_word(w, shell);
                 Stdio::from(File::open(&path).map_err(|e| std::io::Error::new(e.kind(), format!("{path}: {e}")))?)
             }
-            None => next_stdin.take().map_or(Stdio::inherit(), Stdio::from),
+            None => match next_stdin.take() {
+                Some(r) => Stdio::from(r),
+                None if background => Stdio::null(),
+                None => Stdio::inherit(),
+            },
         };
 
         // Salida: archivo con > / >>, la siguiente etapa, o la terminal.
@@ -135,6 +184,9 @@ fn spawn_pipeline(shell: &Shell, cmds: &Pipeline, expanded: &[Vec<String>]) -> s
         child_cmd.arg("--exec").args(args).stdin(stdin);
         child_cmd.stdout(if matches!(stdout_target, Target::Terminal) { Stdio::inherit() } else { Stdio::piped() });
         child_cmd.stderr(if matches!(stderr_target, Target::Terminal) { Stdio::inherit() } else { Stdio::piped() });
+        if background {
+            detach(&mut child_cmd);
+        }
         let mut child = child_cmd.spawn()?;
 
         if let Target::Writer(w) = stdout_target {
@@ -151,15 +203,7 @@ fn spawn_pipeline(shell: &Shell, cmds: &Pipeline, expanded: &[Vec<String>]) -> s
         next_stdin = pipe_reader;
     }
     drop(next_stdin);
-
-    let mut code = 0;
-    for mut child in children {
-        code = child.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
-    }
-    for p in pumps {
-        let _ = p.join();
-    }
-    Ok(code)
+    Ok((children, pumps))
 }
 
 /// Copia la salida de un proceso a su destino quitando los colores ANSI.

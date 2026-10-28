@@ -1,6 +1,7 @@
 //! Convierte una línea en comandos.
-//! Soporta: espacios, "comillas dobles" (expanden $VAR), 'comillas simples' (literales),
-//! pipes `|`, `&&`, `||`, `;`, redirecciones `>`, `>>`, `<`, `2>`, `2>>`, `2>&1` y comodines `*` `?`.
+//! Soporta: espacios, "comillas dobles" (expanden $VAR y $(comando)), 'comillas simples' (literales),
+//! pipes `|`, `&&`, `||`, `;` o salto de línea, `&` al final (segundo plano), redirecciones `>`, `>>`,
+//! `<`, `2>`, `2>>`, `2>&1`, comodines `*` `?`, `$(comando)` y comentarios `#`.
 //! Las variables y los comodines se expanden al ejecutar cada comando (no al leer la línea),
 //! así `cd src && dir *.rs` busca dentro de src y `false || echo $?` muestra 1.
 
@@ -12,6 +13,8 @@ use std::collections::BTreeMap;
 pub enum Part {
     Text(String),
     Var(String),
+    /// `$(comando)`: se reemplaza por lo que imprime el comando.
+    Sub(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -24,8 +27,8 @@ pub struct Word {
 }
 
 impl Word {
-    /// El texto si la palabra es solo texto sin comillas (para reconocer alias).
-    fn plain(&self) -> Option<&str> {
+    /// El texto si la palabra es solo texto sin comillas (para reconocer alias y palabras como `if`).
+    pub fn plain(&self) -> Option<&str> {
         match self.parts.as_slice() {
             [Part::Text(t)] if !self.quoted => Some(t),
             _ => None,
@@ -46,6 +49,8 @@ enum Token {
     In,
     /// `2>&1`
     ErrToOut,
+    /// `&` al final de un comando: corre en segundo plano.
+    Bg,
 }
 
 /// Cómo se une un pipeline con el anterior.
@@ -83,6 +88,14 @@ impl Command {
 /// Comandos unidos por `|`.
 pub type Pipeline = Vec<Command>;
 
+/// Un pipeline con cómo se une al anterior y si corre en segundo plano (`&`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Step {
+    pub op: Op,
+    pub pipeline: Pipeline,
+    pub background: bool,
+}
+
 /// Arma una palabra carácter por carácter.
 #[derive(Default)]
 struct Builder {
@@ -103,6 +116,14 @@ impl Builder {
             self.word.parts.push(Part::Text(std::mem::take(&mut self.text)));
         }
         self.word.parts.push(Part::Var(name));
+    }
+
+    fn sub(&mut self, command: String) {
+        self.active = true;
+        if !self.text.is_empty() {
+            self.word.parts.push(Part::Text(std::mem::take(&mut self.text)));
+        }
+        self.word.parts.push(Part::Sub(command));
     }
 
     fn take(&mut self) -> Option<Word> {
@@ -140,6 +161,31 @@ fn read_var(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<String> 
     (!name.is_empty()).then_some(name)
 }
 
+/// Lee el comando de `$( ... )` (ya se consumió el '$'), respetando paréntesis anidados y comillas.
+fn read_sub(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
+    chars.next(); // '('
+    let mut out = String::new();
+    let mut depth = 1;
+    let mut quote: Option<char> = None;
+    for c in chars.by_ref() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '(') => depth += 1,
+            (None, ')') => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn tokenize(line: &str) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut b = Builder::default();
@@ -153,7 +199,17 @@ fn tokenize(line: &str) -> Vec<Token> {
 
     while let Some(c) = chars.next() {
         match c {
+            '\n' => {
+                flush(&mut b, &mut tokens);
+                tokens.push(Token::Seq);
+            }
             c if c.is_whitespace() => flush(&mut b, &mut tokens),
+            // Comentario: desde un # al inicio de una palabra hasta el fin de la línea.
+            '#' if !b.active => {
+                while chars.peek().is_some_and(|&c| c != '\n') {
+                    chars.next();
+                }
+            }
             '\'' => {
                 b.active = true;
                 b.word.quoted = true;
@@ -170,6 +226,7 @@ fn tokenize(line: &str) -> Vec<Token> {
                 while let Some(c) = chars.next() {
                     match c {
                         '"' => break,
+                        '$' if chars.peek() == Some(&'(') => b.sub(read_sub(&mut chars)),
                         '$' => match read_var(&mut chars) {
                             Some(name) => b.var(name),
                             None => b.text.push('$'),
@@ -178,6 +235,7 @@ fn tokenize(line: &str) -> Vec<Token> {
                     }
                 }
             }
+            '$' if chars.peek() == Some(&'(') => b.sub(read_sub(&mut chars)),
             '$' => match read_var(&mut chars) {
                 Some(name) => b.var(name),
                 None => b.push('$'),
@@ -196,6 +254,8 @@ fn tokenize(line: &str) -> Vec<Token> {
                 flush(&mut b, &mut tokens);
                 tokens.push(Token::And);
             }
+            // `&` suelto (no "a&b"): el comando anterior corre en segundo plano.
+            '&' if !b.active && chars.peek().map_or(true, |c| c.is_whitespace() || *c == ';') => tokens.push(Token::Bg),
             ';' => {
                 flush(&mut b, &mut tokens);
                 tokens.push(Token::Seq);
@@ -258,7 +318,7 @@ fn expand_aliases(tokens: Vec<Token>, aliases: &BTreeMap<String, String>) -> Vec
                 }
                 after_redirect = false;
             }
-            Token::Pipe | Token::And | Token::Or | Token::Seq => {
+            Token::Pipe | Token::And | Token::Or | Token::Seq | Token::Bg => {
                 at_command = true;
                 out.push(t);
             }
@@ -284,14 +344,15 @@ fn symbol(t: &Token) -> &'static str {
         Token::Out { .. } => ">",
         Token::In => "<",
         Token::ErrToOut => "2>&1",
+        Token::Bg => "&",
         Token::Word(_) => "palabra",
     }
 }
 
-/// Línea → lista de (cómo se une, pipeline). Error con un mensaje en español si está mal escrita.
-pub fn parse_line(line: &str, aliases: &BTreeMap<String, String>) -> Result<Vec<(Op, Pipeline)>, String> {
+/// Línea → lista de pasos (pipelines con cómo se unen). Error con un mensaje en español si está mal escrita.
+pub fn parse_line(line: &str, aliases: &BTreeMap<String, String>) -> Result<Vec<Step>, String> {
     let tokens = expand_aliases(tokenize(line), aliases);
-    let mut result: Vec<(Op, Pipeline)> = Vec::new();
+    let mut result: Vec<Step> = Vec::new();
     let mut op = Op::Seq;
     let mut pipeline: Pipeline = Vec::new();
     let mut cmd = Command::default();
@@ -319,7 +380,7 @@ pub fn parse_line(line: &str, aliases: &BTreeMap<String, String>) -> Result<Vec<
                 }
                 pipeline.push(std::mem::take(&mut cmd));
             }
-            Token::And | Token::Or | Token::Seq => {
+            Token::And | Token::Or | Token::Seq | Token::Bg => {
                 if cmd.words.is_empty() {
                     // ";" al final o ";;" no son error; un operador sin comando antes sí.
                     if t == Token::Seq && pipeline.is_empty() {
@@ -328,7 +389,7 @@ pub fn parse_line(line: &str, aliases: &BTreeMap<String, String>) -> Result<Vec<
                     return Err(syntax(symbol(&t)));
                 }
                 pipeline.push(std::mem::take(&mut cmd));
-                result.push((op, std::mem::take(&mut pipeline)));
+                result.push(Step { op, pipeline: std::mem::take(&mut pipeline), background: t == Token::Bg });
                 op = match t {
                     Token::And => Op::And,
                     Token::Or => Op::Or,
@@ -348,21 +409,59 @@ pub fn parse_line(line: &str, aliases: &BTreeMap<String, String>) -> Result<Vec<
         return Err("fysh: falta el comando".into());
     }
     if !pipeline.is_empty() {
-        result.push((op, pipeline));
+        result.push(Step { op, pipeline, background: false });
     }
     Ok(result)
 }
 
-/// Texto final de una palabra, con sus variables resueltas ahora.
+/// Valor de una variable: $? último código, $1…$9 y $argv argumentos del script o función,
+/// el resto variables de entorno.
+fn var(name: &str, shell: &Shell) -> String {
+    match name {
+        "?" => shell.last_status.to_string(),
+        "argv" => shell.argv.join(" "),
+        n if n.chars().all(|c| c.is_ascii_digit()) => {
+            n.parse::<usize>().ok().and_then(|i| i.checked_sub(1)).and_then(|i| shell.argv.get(i)).cloned().unwrap_or_default()
+        }
+        n => std::env::var(n).unwrap_or_default(),
+    }
+}
+
+/// Lo que imprime `fysh -c comando`, sin colores ni saltos de línea al final.
+/// ponytail: corre en otro fysh, así que no ve las funciones ni $1/$argv de este; si hace falta,
+/// pasárselos por variables de entorno.
+fn capture(command: &str) -> String {
+    let Ok(exe) = std::env::current_exe() else { return String::new() };
+    let out = match std::process::Command::new(exe)
+        .args(["-c", command])
+        .stdin(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .output()
+    {
+        Ok(o) => o.stdout,
+        Err(e) => {
+            eprintln!("fysh: $({command}): {e}");
+            return String::new();
+        }
+    };
+    let mut clean = Vec::new();
+    crate::exec::AnsiStripper::default().feed(&out, &mut clean);
+    String::from_utf8_lossy(&clean).replace("\r\n", "\n").trim_end_matches('\n').to_string()
+}
+
+/// `run` = false deja $(comando) escrito tal cual, sin ejecutarlo.
+fn expand_part(part: &Part, shell: &Shell, run: bool) -> String {
+    match part {
+        Part::Text(t) => t.clone(),
+        Part::Var(n) => var(n, shell),
+        Part::Sub(c) if run => capture(c),
+        Part::Sub(c) => format!("$({c})"),
+    }
+}
+
+/// Texto final de una palabra, con sus variables y $(comandos) resueltos ahora.
 pub fn expand_word(word: &Word, shell: &Shell) -> String {
-    word.parts
-        .iter()
-        .map(|p| match p {
-            Part::Text(t) => t.clone(),
-            Part::Var(n) if n == "?" => shell.last_status.to_string(),
-            Part::Var(n) => std::env::var(n).unwrap_or_default(),
-        })
-        .collect()
+    word.parts.iter().map(|p| expand_part(p, shell, true)).collect()
 }
 
 /// Argumentos finales: variables resueltas y comodines expandidos a los archivos que coinciden
@@ -370,7 +469,17 @@ pub fn expand_word(word: &Word, shell: &Shell) -> String {
 pub fn expand_args(words: &[Word], shell: &Shell) -> Vec<String> {
     let mut args = Vec::new();
     for w in words {
+        // $argv sin comillas: un argumento por cada uno (for a in $argv).
+        if !w.quoted && w.parts == [Part::Var("argv".into())] {
+            args.extend(shell.argv.iter().cloned());
+            continue;
+        }
         let text = expand_word(w, shell);
+        // $(comando) sin comillas: un argumento por cada línea que imprime.
+        if !w.quoted && w.parts.iter().any(|p| matches!(p, Part::Sub(_))) {
+            args.extend(text.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from));
+            continue;
+        }
         if w.glob {
             let mut found: Vec<String> = glob::glob(&text)
                 .map(|paths| paths.filter_map(Result::ok).map(|p| p.display().to_string()).collect())
@@ -386,13 +495,13 @@ pub fn expand_args(words: &[Word], shell: &Shell) -> Vec<String> {
     args
 }
 
-/// Palabras del primer comando de la línea, ya resueltas (sin comodines).
+/// Palabras del primer comando de la línea, ya resueltas (sin comodines ni ejecutar $(…)).
 /// Para mirar rápido qué comando es (por ejemplo, `history`).
 pub fn parse(line: &str, shell: &Shell) -> Vec<String> {
     tokenize(line)
         .into_iter()
         .map_while(|t| match t {
-            Token::Word(w) => Some(expand_word(&w, shell)),
+            Token::Word(w) => Some(w.parts.iter().map(|p| expand_part(p, shell, false)).collect()),
             _ => None,
         })
         .collect()
@@ -429,15 +538,15 @@ mod tests {
         let sh = shell();
         let none = BTreeMap::new();
         let p = parse_line("git log | findstr fix && echo ok || echo mal ; dir", &none).unwrap();
-        let ops: Vec<Op> = p.iter().map(|(op, _)| *op).collect();
+        let ops: Vec<Op> = p.iter().map(|s| s.op).collect();
         assert_eq!(ops, [Op::Seq, Op::And, Op::Or, Op::Seq]);
-        assert_eq!(p[0].1.len(), 2);
-        assert_eq!(words(&p[0].1[1], &sh), ["findstr", "fix"]);
-        assert_eq!(words(&p[3].1[0], &sh), ["dir"]);
+        assert_eq!(p[0].pipeline.len(), 2);
+        assert_eq!(words(&p[0].pipeline[1], &sh), ["findstr", "fix"]);
+        assert_eq!(words(&p[3].pipeline[0], &sh), ["dir"]);
         // Operadores dentro de comillas son texto.
         let q = parse_line("echo \"a | b && c\" 'x;y'", &none).unwrap();
         assert_eq!(q.len(), 1);
-        assert_eq!(words(&q[0].1[0], &sh), ["echo", "a | b && c", "x;y"]);
+        assert_eq!(words(&q[0].pipeline[0], &sh), ["echo", "a | b && c", "x;y"]);
     }
 
     #[test]
@@ -445,19 +554,19 @@ mod tests {
         let sh = shell();
         let none = BTreeMap::new();
         let p = parse_line("cargo build >> log.txt 2>&1 < entrada.txt", &none).unwrap();
-        let c = &p[0].1[0];
+        let c = &p[0].pipeline[0];
         assert_eq!(words(c, &sh), ["cargo", "build"]);
         assert!(matches!(&c.stdout, Some(Sink::File { path, append: true }) if expand_word(path, &sh) == "log.txt"));
         assert_eq!(c.stderr, Some(Sink::Stdout));
         assert_eq!(expand_word(c.stdin.as_ref().unwrap(), &sh), "entrada.txt");
 
         let e = parse_line("npm test 2> errores.txt>salida.txt", &none).unwrap();
-        let c = &e[0].1[0];
+        let c = &e[0].pipeline[0];
         assert!(matches!(&c.stderr, Some(Sink::File { path, append: false }) if expand_word(path, &sh) == "errores.txt"));
         assert!(matches!(&c.stdout, Some(Sink::File { path, .. }) if expand_word(path, &sh) == "salida.txt"));
         // "a2>x" no es redirección de errores: es la palabra "a2" y luego > x
         let f = parse_line("echo a2>x", &none).unwrap();
-        assert_eq!(words(&f[0].1[0], &sh), ["echo", "a2"]);
+        assert_eq!(words(&f[0].pipeline[0], &sh), ["echo", "a2"]);
     }
 
     #[test]
@@ -477,14 +586,39 @@ mod tests {
         let mut sh = shell();
         let none = BTreeMap::new();
         let p = parse_line("echo $? *.rs '*.md' src/?ain.rs", &none).unwrap();
-        let w = &p[0].1[0].words;
+        let w = &p[0].pipeline[0].words;
         sh.last_status = 7; // $? se lee al ejecutar, no al leer la línea
         assert_eq!(expand_word(&w[1], &sh), "7");
         assert!(w[2].glob && !w[3].glob && w[4].glob);
         assert_eq!(expand_args(&w[3..4], &sh), ["*.md"]);
         // Sin coincidencias, el comodín queda tal cual.
         let nada = parse_line("x *.no-existe-fysh", &none).unwrap();
-        assert_eq!(expand_args(&nada[0].1[0].words[1..], &sh), ["*.no-existe-fysh"]);
+        assert_eq!(expand_args(&nada[0].pipeline[0].words[1..], &sh), ["*.no-existe-fysh"]);
+    }
+
+    #[test]
+    fn subcomandos_segundo_plano_y_comentarios() {
+        let none = BTreeMap::new();
+        let p = parse_line(r#"echo $(git branch --show-current) "hoy: $(date)" a$(x (y))b"#, &none).unwrap();
+        let w = &p[0].pipeline[0].words;
+        assert_eq!(w[1].parts, [Part::Sub("git branch --show-current".into())]);
+        assert_eq!(w[2].parts, [Part::Text("hoy: ".into()), Part::Sub("date".into())]);
+        assert_eq!(w[3].parts, [Part::Text("a".into()), Part::Sub("x (y)".into()), Part::Text("b".into())]);
+        let bg = parse_line("npm run dev & echo listo ; a&b", &none).unwrap();
+        assert_eq!(bg.iter().map(|s| s.background).collect::<Vec<_>>(), [true, false, false]);
+        assert_eq!(words(&bg[2].pipeline[0], &shell()), ["a&b"]);
+        let c = parse_line("echo uno # nota\necho dos#no", &none).unwrap();
+        assert_eq!(c.len(), 2, "el salto de línea separa comandos");
+        assert_eq!(words(&c[1].pipeline[0], &shell()), ["echo", "dos#no"]);
+        assert_eq!(parse("echo $(no se ejecuta)", &shell()), ["echo", "$(no se ejecuta)"]);
+    }
+
+    #[test]
+    fn argumentos_de_scripts() {
+        let mut sh = shell();
+        sh.argv = vec!["a b".into(), "c".into()];
+        let p = parse_line("x $1 $2 $3 $argv \"$argv\"", &BTreeMap::new()).unwrap();
+        assert_eq!(expand_args(&p[0].pipeline[0].words, &sh), ["x", "a b", "c", "", "a b", "c", "a b c"]);
     }
 
     #[test]
@@ -494,11 +628,11 @@ mod tests {
         aliases.insert("gl".to_string(), "git log --oneline".to_string());
         aliases.insert("ok".to_string(), "echo bien && echo listo".to_string());
         let p = parse_line("gl -5 | findstr gl && ok", &aliases).unwrap();
-        assert_eq!(words(&p[0].1[0], &sh), ["git", "log", "--oneline", "-5"]);
-        assert_eq!(words(&p[0].1[1], &sh), ["findstr", "gl"], "gl como argumento no se expande");
+        assert_eq!(words(&p[0].pipeline[0], &sh), ["git", "log", "--oneline", "-5"]);
+        assert_eq!(words(&p[0].pipeline[1], &sh), ["findstr", "gl"], "gl como argumento no se expande");
         assert_eq!(p.len(), 3, "el alias trae su propio &&");
-        assert_eq!(words(&p[2].1[0], &sh), ["echo", "listo"]);
+        assert_eq!(words(&p[2].pipeline[0], &sh), ["echo", "listo"]);
         let q = parse_line("'gl'", &aliases).unwrap();
-        assert_eq!(words(&q[0].1[0], &sh), ["gl"], "con comillas no es alias");
+        assert_eq!(words(&q[0].pipeline[0], &sh), ["gl"], "con comillas no es alias");
     }
 }

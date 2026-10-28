@@ -57,6 +57,28 @@ pub fn run(args: &[String], shell: &mut Shell) -> Option<i32> {
         "agy" | "antigravity" if rest.is_empty() => crate::agents::agy_picker(),
         "opencode" => crate::agents::opencode(rest),
         "git" => return crate::git::run(rest),
+        "source" if !rest.is_empty() => crate::script::run_file(shell, &rest[0], &rest[1..]),
+        "test" => test_cmd(rest),
+        "true" => 0,
+        "false" => 1,
+        "math" => math_cmd(rest),
+        "read" => read_cmd(rest),
+        "break" => {
+            shell.flow = crate::script::Flow::Break;
+            0
+        }
+        "continue" => {
+            shell.flow = crate::script::Flow::Continue;
+            0
+        }
+        "return" => {
+            shell.flow = crate::script::Flow::Return;
+            rest.first().and_then(|a| a.parse().ok()).unwrap_or(shell.last_status)
+        }
+        "jobs" => crate::jobs::jobs_cmd(shell),
+        "fg" => crate::jobs::fg_cmd(shell, rest),
+        // `kill %1`: trabajos de fysh; `kill 1234` sigue siendo el programa del sistema.
+        "kill" if !rest.is_empty() && rest.iter().all(|a| a.starts_with('%')) => crate::jobs::kill_cmd(shell, rest),
         _ => return None,
     };
     Some(code)
@@ -234,6 +256,137 @@ pub fn error_msg(e: &io::Error) -> String {
     }
 }
 
+/// `test`: condiciones para if y while. 0 = verdadero, 1 = falso, 2 = mal escrito.
+fn test_cmd(args: &[String]) -> i32 {
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    match test_eval(&words) {
+        Some(true) => 0,
+        Some(false) => 1,
+        None => {
+            eprintln!("test: no entiendo '{}'. Ejemplos: test -f archivo · test $x = hola · test $n -gt 3", args.join(" "));
+            2
+        }
+    }
+}
+
+fn test_eval(a: &[&str]) -> Option<bool> {
+    let num = |s: &str| s.trim().parse::<f64>().ok();
+    let path = std::path::Path::new;
+    Some(match a {
+        [] => false,
+        ["!", rest @ ..] => !test_eval(rest)?,
+        [s] => !s.is_empty(),
+        ["-n", s] => !s.is_empty(),
+        ["-z", s] => s.is_empty(),
+        ["-e", p] => path(p).exists(),
+        ["-f", p] => path(p).is_file(),
+        ["-d", p] => path(p).is_dir(),
+        [x, "=" | "==", y] => x == y,
+        [x, "!=", y] => x != y,
+        [x, op, y] => {
+            let (x, y) = (num(x)?, num(y)?);
+            match *op {
+                "-eq" => x == y,
+                "-ne" => x != y,
+                "-lt" => x < y,
+                "-le" => x <= y,
+                "-gt" => x > y,
+                "-ge" => x >= y,
+                _ => return None,
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// `math 2 + 3 x 4`: + - * (o x) / % y paréntesis. Sin comillas, `*` sería un comodín: usa x o "2 * 3".
+fn math_cmd(args: &[String]) -> i32 {
+    let text = args.join(" ");
+    match math_eval(&text) {
+        Some(v) if v.fract() == 0.0 && v.abs() < 1e15 => println!("{}", v as i64),
+        Some(v) => println!("{}", (v * 1e6).round() / 1e6),
+        None => {
+            eprintln!("math: no entiendo '{text}'. Ejemplo: math $n + 1");
+            return 1;
+        }
+    }
+    0
+}
+
+fn math_eval(text: &str) -> Option<f64> {
+    let chars: Vec<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut pos = 0;
+    let value = math_sum(&chars, &mut pos)?;
+    (pos == chars.len()).then_some(value)
+}
+
+fn math_sum(c: &[char], pos: &mut usize) -> Option<f64> {
+    let mut v = math_product(c, pos)?;
+    while let Some(&op) = c.get(*pos).filter(|&&ch| ch == '+' || ch == '-') {
+        *pos += 1;
+        let rhs = math_product(c, pos)?;
+        v = if op == '+' { v + rhs } else { v - rhs };
+    }
+    Some(v)
+}
+
+fn math_product(c: &[char], pos: &mut usize) -> Option<f64> {
+    let mut v = math_atom(c, pos)?;
+    while let Some(&op) = c.get(*pos).filter(|&&ch| matches!(ch, '*' | 'x' | '/' | '%')) {
+        *pos += 1;
+        let rhs = math_atom(c, pos)?;
+        v = match op {
+            '/' | '%' if rhs == 0.0 => return None,
+            '/' => v / rhs,
+            '%' => v % rhs,
+            _ => v * rhs,
+        };
+    }
+    Some(v)
+}
+
+fn math_atom(c: &[char], pos: &mut usize) -> Option<f64> {
+    match c.get(*pos)? {
+        '-' => {
+            *pos += 1;
+            Some(-math_atom(c, pos)?)
+        }
+        '(' => {
+            *pos += 1;
+            let v = math_sum(c, pos)?;
+            (c.get(*pos) == Some(&')')).then(|| *pos += 1)?;
+            Some(v)
+        }
+        _ => {
+            let start = *pos;
+            while c.get(*pos).is_some_and(|ch| ch.is_ascii_digit() || *ch == '.') {
+                *pos += 1;
+            }
+            c[start..*pos].iter().collect::<String>().parse().ok()
+        }
+    }
+}
+
+/// `read NOMBRE [pregunta]`: lee una línea del teclado (o de un pipe) y la guarda en $NOMBRE.
+fn read_cmd(args: &[String]) -> i32 {
+    let Some(name) = args.first() else {
+        eprintln!("uso: read NOMBRE [pregunta]");
+        return 2;
+    };
+    if args.len() > 1 {
+        print!("{} ", args[1..].join(" "));
+        io::stdout().flush().ok();
+    }
+    let mut line = String::new();
+    match io::stdin().read_line(&mut line) {
+        Ok(0) | Err(_) => 1,
+        Ok(_) => {
+            env::set_var(name, line.trim_end_matches(['\r', '\n']));
+            0
+        }
+    }
+}
+
 /// 1536 → "1.5 KB"
 fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
@@ -284,6 +437,13 @@ fn help() -> i32 {
         ("explica", "El asistente explica el último error y sugiere cómo arreglarlo"),
         ("ins: <tarea>", "El asistente escribe el comando para una tarea (ins: borrar rama x)"),
         ("actualizar", "Instala la última versión de fysh (también: update)"),
+        ("source <archivo>", "Ejecuta un script .fysh en esta sesión (sus funciones quedan definidas)"),
+        ("test <condición>", "Para if/while: -f archivo, -d carpeta, -z texto, a = b, n -gt 3, ! niega"),
+        ("math <cuenta>", "Calcula: math $n + 1 · math (2 + 3) x 4 (x o \"*\" para multiplicar)"),
+        ("read <NOMBRE> [pregunta]", "Pide un texto y lo guarda en $NOMBRE"),
+        ("jobs", "Comandos en segundo plano (los que terminaste con &)"),
+        ("fg [N]", "Espera a que termine un comando en segundo plano"),
+        ("kill %N", "Cierra un comando en segundo plano"),
         ("help", "Muestra esta ayuda"),
         ("exit [código]", "Cierra fysh"),
     ]
@@ -299,6 +459,18 @@ fn help() -> i32 {
             ("Redirigir", "a > f · a >> f (agregar) · a 2> f (errores) · a 2>&1 · a < f"),
             ("Encadenar", "a && b (si a sale bien) · a || b (si a falla) · a ; b (siempre)"),
             ("*.txt", "comodines: todos los archivos que coinciden"),
+            ("$(comando)", "lo que imprime el comando: echo hoy es $(date) · una palabra por línea"),
+            ("comando &", "corre en segundo plano y te devuelve el prompt (mira jobs)"),
+            ("# texto", "comentario"),
+        ]),
+        ("Scripts", &[
+            ("if", "if test -f .env; echo hay; else; echo no; end"),
+            ("for", "for f in *.log; rm $f; end"),
+            ("while", "while test $n -lt 5; set n=$(math $n + 1); end"),
+            ("function", "function hola; echo hola $1; end   ($1 $2… y $argv)"),
+            ("", "break, continue y return dentro de bucles y funciones"),
+            ("Varias líneas", "si escribes if/for/while/function, Enter pide la siguiente línea hasta end"),
+            ("Archivos", "tarea.fysh: fysh tarea.fysh a b · ./tarea.fysh · source tarea.fysh"),
         ]),
         ("Teclas", &[
             ("Tab", "completa comandos, archivos y ramas"),
@@ -338,7 +510,20 @@ fn help() -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::human_size;
+    use super::{human_size, math_eval, test_eval};
+
+    #[test]
+    fn cuentas_y_condiciones() {
+        assert_eq!(math_eval("(2 + 3) x 4 - -1"), Some(21.0));
+        assert_eq!(math_eval("7 / 2"), Some(3.5));
+        assert_eq!(math_eval("10 % 3 * 2"), Some(2.0));
+        assert_eq!(math_eval("1 / 0"), None);
+        assert_eq!(math_eval("2 +"), None);
+        assert_eq!(test_eval(&["3", "-lt", "10"]), Some(true));
+        assert_eq!(test_eval(&["!", "a", "=", "a"]), Some(false));
+        assert_eq!(test_eval(&["-z", ""]), Some(true));
+        assert_eq!(test_eval(&["x", "-gt", "1"]), None);
+    }
 
     #[test]
     fn tamanos() {

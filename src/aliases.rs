@@ -1,5 +1,5 @@
 //! Alias y archivo de configuración ~/.fyshrc.
-//! Cada línea de .fyshrc se ejecuta al abrir fysh (alias, set, cd...). `alias` y `unalias`
+//! Cada línea (o bloque if/for/function … end) de .fyshrc se ejecuta al abrir fysh (alias, set, cd...). `alias` y `unalias`
 //! actualizan ese archivo solos; `config` lo abre en el editor y lo recarga al cerrarlo.
 
 use crate::table::{self, Align};
@@ -23,9 +23,7 @@ pub fn rc_path() -> Option<PathBuf> {
 pub fn load(shell: &mut Shell) {
     let Some(text) = rc_path().and_then(|p| fs::read_to_string(p).ok()) else { return };
     shell.loading_rc = true;
-    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-        crate::execute(shell, line);
-    }
+    crate::script::run_text(shell, &text);
     shell.loading_rc = false;
 }
 

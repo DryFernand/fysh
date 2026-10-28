@@ -13,6 +13,7 @@ mod fuzzy;
 mod git;
 mod history;
 mod http;
+mod jobs;
 mod jump;
 mod notify;
 mod parser;
@@ -21,6 +22,7 @@ mod procs;
 mod projenv;
 mod protobuf;
 mod run;
+mod script;
 mod ssh;
 mod table;
 mod tunnel;
@@ -28,7 +30,7 @@ mod update;
 
 use rustyline::error::ReadlineError;
 use rustyline::history::FileHistory;
-use rustyline::{CompletionType, Config, Editor, EventHandler, KeyEvent};
+use rustyline::{Cmd, CompletionType, Config, Editor, EventHandler, KeyCode, KeyEvent, Modifiers};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::process::Command;
@@ -77,6 +79,14 @@ pub struct Shell {
     /// Cuánto tardó el último comando.
     pub last_duration: Duration,
     pub last_failure: Option<Failure>,
+    /// Argumentos del script o función que corre ($1, $2…, $argv).
+    pub argv: Vec<String>,
+    /// Funciones definidas con `function nombre; …; end`.
+    pub functions: std::collections::HashMap<String, Vec<script::Node>>,
+    /// break / continue / return pendientes.
+    pub flow: script::Flow,
+    /// Trabajos en segundo plano (`comando &`).
+    pub jobs: Vec<jobs::Job>,
 }
 
 impl Shell {
@@ -90,6 +100,10 @@ impl Shell {
             pending: None,
             last_duration: Duration::ZERO,
             last_failure: None,
+            argv: Vec::new(),
+            functions: Default::default(),
+            flow: Default::default(),
+            jobs: Vec::new(),
         }
     }
 }
@@ -101,6 +115,7 @@ pub fn execute(shell: &mut Shell, line: &str) {
     let first = parser::parse(line, shell);
     let Some(cmd) = first.first().cloned() else { return };
     shell.line = line.to_string();
+    script::INTERRUPTED.store(false, std::sync::atomic::Ordering::Relaxed);
     let start_row = ai::console_row();
     let started = Instant::now();
     // `alias` e `ins:` usan el resto de la línea tal cual: su texto puede llevar | && ; sin ser operadores.
@@ -190,12 +205,19 @@ fn main() {
             let code = exec::run_args(&mut shell, &argv[2..]);
             std::process::exit(code);
         }
+        // `fysh tarea.fysh [args]`: ejecuta un script y sale.
+        Some(path) if !path.starts_with('-') => {
+            let mut shell = Shell::new();
+            ctrlc::set_handler(|| script::INTERRUPTED.store(true, std::sync::atomic::Ordering::Relaxed)).ok();
+            let code = script::run_file(&mut shell, path, &argv[2..]);
+            std::process::exit(code);
+        }
         _ => {}
     }
     let mut shell = Shell::new();
 
-    // Ctrl+C mientras corre un programa lo corta a él, no a la shell.
-    ctrlc::set_handler(|| {}).ok();
+    // Ctrl+C mientras corre un programa lo corta a él, no a la shell; también corta bucles y scripts.
+    ctrlc::set_handler(|| script::INTERRUPTED.store(true, std::sync::atomic::Ordering::Relaxed)).ok();
 
     set_title(&shell_name());
     println!("{RED}{BANNER}{RESET}");
@@ -239,6 +261,8 @@ fn main() {
     refresh_history(&editor);
     editor.bind_sequence(KeyEvent::ctrl('R'), EventHandler::Conditional(Box::new(complete::HistorySearch { entries: history_items.clone() })));
     editor.bind_sequence(KeyEvent::ctrl('T'), EventHandler::Conditional(Box::new(complete::FileSearch)));
+    // Enter en un bloque sin `end` (if/for/while/function) agrega otra línea en vez de ejecutar.
+    editor.bind_sequence(KeyEvent(KeyCode::Enter, Modifiers::NONE), Cmd::AcceptOrInsertLine { accept_in_the_middle: true });
 
     let mut last_dir = std::env::current_dir().ok();
     if let Some(d) = &last_dir {
@@ -247,6 +271,7 @@ fn main() {
     }
 
     while shell.running {
+        jobs::reap(&mut shell);
         let colored = prompt(&shell);
         if let Some(helper) = editor.helper() {
             *helper.colored_prompt.borrow_mut() = colored.clone();
