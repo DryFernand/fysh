@@ -1,17 +1,16 @@
 mod agents;
 mod builtins;
+mod complete;
 mod git;
 mod parser;
 mod picker;
 mod table;
 
-use std::io::{self, Write};
+use rustyline::error::ReadlineError;
+use rustyline::history::FileHistory;
+use rustyline::{CompletionType, Config, Editor};
+use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
-
-/// Se pone en true cuando el usuario presiona Ctrl+C.
-static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 // Colores ANSI. Cambia los números para cambiar el estilo (38;2;R;G;B = color RGB).
 pub const RED: &str = "\x1b[38;2;255;70;70m";
@@ -39,29 +38,44 @@ pub struct Shell {
 fn main() {
     let mut shell = Shell { last_status: 0, running: true };
 
-    // Ctrl+C mata al programa que esté corriendo, no a la shell.
-    ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst)).ok();
+    // Ctrl+C mientras corre un programa lo corta a él, no a la shell.
+    ctrlc::set_handler(|| {}).ok();
 
     print!("\x1b]0;fysh\x07"); // título de la ventana
     println!("{RED}{BANNER}{RESET}");
     println!("  {GRAY}v{} · escribe 'help' para ver los comandos{RESET}\n", env!("CARGO_PKG_VERSION"));
 
-    while shell.running {
-        INTERRUPTED.store(false, Ordering::SeqCst);
-        print_prompt(&shell);
+    // Editor de línea: Tab completa, ↑↓ recorren el historial, las sugerencias grises salen del historial.
+    let config = Config::builder()
+        .completion_type(CompletionType::List)
+        .auto_add_history(true)
+        .max_history_size(1000)
+        .map(|b| b.build());
+    let mut editor = match config.and_then(Editor::<complete::FyshHelper, FileHistory>::with_config) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("fysh: no se pudo iniciar el editor de línea: {e}");
+            std::process::exit(1);
+        }
+    };
+    editor.set_helper(Some(complete::FyshHelper::new()));
+    let history = history_path();
+    if let Some(h) = &history {
+        editor.load_history(h).ok();
+    }
 
-        let mut line = String::new();
-        let read = io::stdin().read_line(&mut line);
-        if matches!(read, Ok(0) | Err(_)) {
-            // En Windows, Ctrl+C en el prompt corta la lectura igual que un EOF;
-            // el handler corre en otro hilo, así que le damos un instante.
-            // ponytail: espera fija de 50ms; si falla en PCs lentas, usar ReadConsoleW directo.
-            std::thread::sleep(Duration::from_millis(50));
-            if INTERRUPTED.load(Ordering::SeqCst) {
-                println!();
-                continue;
-            }
-            break; // EOF real (Ctrl+Z en Windows, Ctrl+D en Unix)
+    while shell.running {
+        let colored = prompt(&shell);
+        if let Some(helper) = editor.helper() {
+            *helper.colored_prompt.borrow_mut() = colored.clone();
+        }
+        let line = match editor.readline(&table::strip_ansi(&colored)) {
+            Ok(line) => line,
+            Err(ReadlineError::Interrupted) => continue, // Ctrl+C en el prompt: línea nueva
+            Err(_) => break,                             // Ctrl+D / Ctrl+Z o fin de entrada
+        };
+        if let Some(h) = &history {
+            editor.save_history(h).ok();
         }
 
         let args = parser::parse(&line, &shell);
@@ -77,8 +91,13 @@ fn main() {
     std::process::exit(shell.last_status);
 }
 
-/// Prompt: "fysh ~\carpeta ❯". Si el último comando falló, muestra su código.
-fn print_prompt(shell: &Shell) {
+/// Historial guardado entre sesiones: ~/.fysh_history
+fn history_path() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(|h| PathBuf::from(h).join(".fysh_history"))
+}
+
+/// Prompt: "fysh ~\carpeta (rama ●3) ❯". Si el último comando falló, muestra su código.
+fn prompt(shell: &Shell) -> String {
     let mut cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
     let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
     if !home.is_empty() && cwd.starts_with(&home) {
@@ -89,8 +108,7 @@ fn print_prompt(shell: &Shell) {
         code => format!("{RED}[{code}] "),
     };
     let git = git::prompt_segment();
-    print!("{BOLD}{RED}fysh{RESET} {GRAY}{cwd}{RESET}{git} {status}{RED}❯{RESET} ");
-    io::stdout().flush().ok();
+    format!("{BOLD}{RED}fysh{RESET} {GRAY}{cwd}{RESET}{git} {status}{RED}❯{RESET} ")
 }
 
 /// Lanza un programa externo y espera a que termine.

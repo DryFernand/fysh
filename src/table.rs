@@ -58,6 +58,22 @@ pub fn truncate(text: &str, max: usize) -> String {
     }
 }
 
+/// El texto sin códigos de color ANSI.
+pub fn strip_ansi(s: &str) -> String {
+    let mut out = String::new();
+    let mut in_escape = false;
+    for c in s.chars() {
+        if in_escape {
+            in_escape = c != 'm';
+        } else if c == '\x1b' {
+            in_escape = true;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Ancho visible del texto: ignora los códigos de color ANSI (\x1b[...m).
 pub fn width(s: &str) -> usize {
     let mut n = 0;
