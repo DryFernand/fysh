@@ -1,6 +1,7 @@
 mod agents;
 mod builtins;
 mod complete;
+mod envvars;
 mod git;
 mod parser;
 mod picker;

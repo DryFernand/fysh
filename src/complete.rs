@@ -11,8 +11,8 @@ use std::cell::RefCell;
 
 /// Comandos propios de fysh y agentes, para completar la primera palabra.
 const COMMANDS: &[&str] = &[
-    "cd", "cls", "clear", "dir", "ls", "pwd", "echo", "set", "help", "exit", "git", "claude", "agy", "antigravity",
-    "opencode",
+    "cd", "cls", "clear", "dir", "ls", "pwd", "echo", "set", "env", "path", "help", "exit", "git", "claude", "agy",
+    "antigravity", "opencode",
 ];
 
 /// Catálogo de subcomandos de git.
