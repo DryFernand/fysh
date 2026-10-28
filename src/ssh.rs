@@ -590,7 +590,9 @@ pub fn ssh_args(args: &[String]) -> i32 {
     let mut cmd = vec!["ssh".to_string()];
     cmd.extend(args.iter().cloned());
     let code = run_external(&cmd);
-    if code == 0 {
+    // ssh devuelve el código del último comando que corriste en el servidor; solo 255 significa
+    // que no se pudo conectar. Cualquier otro código = la conexión funcionó.
+    if code != 255 {
         offer_save(&args);
     }
     code
