@@ -32,6 +32,7 @@ pub fn run(args: &[String], shell: &mut Shell) -> Option<i32> {
         "config" => crate::aliases::config_cmd(shell),
         "z" => crate::jump::z_cmd(rest),
         "ssh" if rest.is_empty() => crate::ssh::ssh_cmd(),
+        "ssh" => crate::ssh::ssh_args(rest),
         "agent" => crate::ai::agent_cmd(),
         "explica" => crate::ai::explica_cmd(shell),
         cmd if cmd.starts_with("ins:") => {

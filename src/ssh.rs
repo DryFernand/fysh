@@ -1,15 +1,21 @@
 //! `ssh` sin argumentos: tus servidores en una tabla (con si responden o no) para conectar,
 //! subir/bajar archivos, editarlos o borrarlos, y un asistente para agregar uno nuevo.
 //! Se guardan en ~/.ssh/config (el archivo estándar), así también funcionan fuera de fysh.
+//!
+//! `ssh` con argumentos corre el ssh real, pero si la llave de `-i` no existe busca tus llaves
+//! privadas y te deja elegir; si está fuera de ~/.ssh ofrece copiarla allí y protegerla
+//! (OpenSSH rechaza llaves que otros usuarios pueden leer); y si la conexión funcionó y el
+//! servidor no estaba guardado, ofrece guardarlo.
 
 use crate::ask::{ask, confirm};
 use crate::picker;
 use crate::table::{self, Align};
-use crate::{home, run_external, GRAY, GREEN, RED, RESET};
-use std::io::IsTerminal;
+use crate::{home, run_external, tilde, GRAY, GREEN, RED, RESET};
+use std::fs;
+use std::io::{IsTerminal, Read};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::path::PathBuf;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Server {
@@ -231,7 +237,12 @@ fn edit(existing: Option<&Server>) -> i32 {
         eprintln!("Puerto no válido: {port_text}");
         return 1;
     };
-    let identity = ask("Llave privada (vacío = usar contraseña): ", &base.identity).unwrap_or_default();
+    let identity = match choose_key(None, &base.identity) {
+        Some(KeyChoice::Key(path)) => prepare_key(&path).display().to_string(),
+        Some(KeyChoice::Keep) => base.identity.clone(),
+        Some(KeyChoice::Password) => String::new(),
+        None => return 0,
+    };
 
     let server = Server { name: name.clone(), host, user, port, identity };
     let verb = if existing.is_some() { "actualizado" } else { "guardado" };
@@ -259,6 +270,269 @@ fn download(s: &Server) -> i32 {
     let Some(remote) = ask(&format!("Archivo o carpeta en {} a bajar: ", s.name), "~/") else { return 0 };
     let Some(local) = ask("Guardar en: ", ".") else { return 0 };
     run_external(&["scp".into(), "-r".into(), format!("{}:{remote}", s.name), local])
+}
+
+// ---------- llaves privadas ----------
+
+/// Carpetas donde suelen quedar las llaves (las descargadas de AWS, por ejemplo).
+fn key_dirs() -> Vec<PathBuf> {
+    let Some(h) = home() else { return Vec::new() };
+    [".ssh", "Downloads", "Descargas", "Documents", "Documentos", "Desktop", "Escritorio", "OneDrive/Desktop", "OneDrive/Escritorio", "OneDrive/Documents", "OneDrive/Documentos"]
+        .iter()
+        .map(|d| h.join(d))
+        .filter(|d| d.is_dir())
+        .collect()
+}
+
+/// ¿Es una llave privada? Se mira el contenido, no la extensión.
+fn is_private_key(path: &Path) -> bool {
+    let Ok(meta) = fs::metadata(path) else { return false };
+    if !meta.is_file() || meta.len() > 20_000 {
+        return false;
+    }
+    let mut head = [0u8; 80];
+    let n = fs::File::open(path).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
+    let text = String::from_utf8_lossy(&head[..n]);
+    text.starts_with("-----BEGIN") && text.contains("PRIVATE KEY")
+}
+
+/// Llaves privadas en esas carpetas (y una subcarpeta adentro), sin repetir.
+fn find_keys() -> Vec<(PathBuf, SystemTime)> {
+    fn walk(dir: &Path, depth: u8, out: &mut Vec<(PathBuf, SystemTime)>) {
+        let Ok(entries) = fs::read_dir(dir) else { return };
+        for e in entries.filter_map(Result::ok) {
+            let path = e.path();
+            let name = e.file_name().to_string_lossy().to_string();
+            if path.is_dir() {
+                if depth > 0 && !name.starts_with('.') && name != "node_modules" {
+                    walk(&path, depth - 1, out);
+                }
+            } else if is_private_key(&path) {
+                let modified = e.metadata().and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
+                out.push((path, modified));
+            }
+        }
+    }
+    let mut keys = Vec::new();
+    for dir in key_dirs() {
+        walk(&dir, 1, &mut keys);
+    }
+    let mut seen = Vec::new();
+    keys.retain(|(p, _)| {
+        let id = fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+        let new = !seen.contains(&id);
+        seen.push(id);
+        new
+    });
+    keys
+}
+
+/// "mysql-bastion-key (1).pem" → "mysql-bastion-key": sin extensión ni el " (1)" que pone Windows
+/// al descargar el mismo archivo otra vez.
+fn base_name(path: &Path) -> String {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+    match stem.rsplit_once(" (") {
+        Some((base, rest)) if rest.ends_with(')') && rest[..rest.len() - 1].chars().all(|c| c.is_ascii_digit()) => base.to_string(),
+        _ => stem,
+    }
+}
+
+enum KeyChoice {
+    Key(PathBuf),
+    /// Dejar la llave que ya tenía el servidor.
+    Keep,
+    Password,
+}
+
+/// Selector de llaves. `wanted`: la ruta que se escribió (sus parecidas van primero).
+/// `current`: llave actual del servidor en el asistente (se ofrece mantenerla).
+/// Con `wanted`, no se ofrece contraseña: quien escribió -i quiere una llave.
+fn choose_key(wanted: Option<&Path>, current: &str) -> Option<KeyChoice> {
+    let mut keys = find_keys();
+    let target = wanted.map(base_name);
+    keys.sort_by(|a, b| {
+        let a_match = target.as_deref() == Some(base_name(&a.0).as_str());
+        let b_match = target.as_deref() == Some(base_name(&b.0).as_str());
+        b_match.cmp(&a_match).then(b.1.cmp(&a.1))
+    });
+
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut choices: Vec<KeyChoice> = Vec::new();
+    if !current.is_empty() {
+        rows.push(vec!["Mantener la actual".into(), format!("{GRAY}{current}{RESET}"), String::new()]);
+        choices.push(KeyChoice::Keep);
+    }
+    if wanted.is_none() {
+        rows.push(vec!["Sin llave (usar contraseña)".into(), String::new(), String::new()]);
+        choices.push(KeyChoice::Password);
+    }
+    for (path, modified) in keys {
+        let folder = path.parent().map(tilde).unwrap_or_default();
+        let when = chrono::DateTime::<chrono::Local>::from(modified).format("%Y-%m-%d").to_string();
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        rows.push(vec![name, format!("{GRAY}{folder}{RESET}"), format!("{GRAY}{when}{RESET}")]);
+        choices.push(KeyChoice::Key(path));
+    }
+
+    if choices.iter().all(|c| !matches!(c, KeyChoice::Key(_))) && wanted.is_some() {
+        eprintln!("No encontré ninguna llave privada en ~/.ssh, Descargas, Documentos ni Escritorio.");
+        eprintln!("{GRAY}Descarga la llave (.pem) y vuelve a intentar.{RESET}");
+        return None;
+    }
+    println!("{GRAY}Elige la llave para conectar:{RESET}");
+    let i = picker::select_one(&["Llave", "Carpeta", "Fecha"], &rows)?;
+    choices.into_iter().nth(i)
+}
+
+fn inside_ssh_dir(path: &Path) -> bool {
+    let Some(ssh) = home().map(|h| h.join(".ssh")) else { return false };
+    match (fs::canonicalize(path), fs::canonicalize(ssh)) {
+        (Ok(p), Ok(s)) => p.starts_with(s),
+        _ => false,
+    }
+}
+
+/// Deja la llave lista para usar: si está fuera de ~/.ssh ofrece copiarla allí, y la protege
+/// para que solo tú puedas leerla (OpenSSH rechaza llaves con "UNPROTECTED PRIVATE KEY FILE").
+fn prepare_key(path: &Path) -> PathBuf {
+    let mut key = path.to_path_buf();
+    if !inside_ssh_dir(path) {
+        let folder = path.parent().map(tilde).unwrap_or_default();
+        if confirm(&format!("La llave está en {folder}. ¿Copiarla a ~/.ssh y protegerla? (recomendado)")) {
+            if let Some(ssh) = home().map(|h| h.join(".ssh")) {
+                let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+                let target = ssh.join(format!("{}{ext}", base_name(path)));
+                let same = fs::read(&target).ok() == fs::read(path).ok();
+                let copied = same || (!target.exists() && fs::create_dir_all(&ssh).and_then(|_| fs::copy(path, &target)).is_ok());
+                if copied {
+                    println!("{GREEN}✓{RESET} Llave copiada a {}", tilde(&target));
+                    key = target;
+                } else {
+                    eprintln!("{GRAY}Ya existe otra llave llamada {} en ~/.ssh: uso la original.{RESET}", tilde(&target));
+                }
+            }
+        }
+    }
+    if protect(&key) {
+        println!("{GREEN}✓{RESET} Permisos de la llave ajustados: solo tú puedes leerla");
+    }
+    key
+}
+
+/// Solo el usuario actual puede leer la llave.
+fn protect(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let Ok(user) = std::env::var("USERNAME") else { return false };
+        std::process::Command::new("icacls")
+            .arg(path)
+            .args(["/inheritance:r", "/grant:r", &format!("{user}:F")])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).is_ok()
+    }
+}
+
+fn expand_tilde(path: &str) -> PathBuf {
+    match (path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")), home()) {
+        (Some(rest), Some(h)) => h.join(rest),
+        _ => PathBuf::from(path),
+    }
+}
+
+/// Opciones de ssh que llevan un valor después (para encontrar el destino).
+const OPTIONS_WITH_VALUE: &[&str] =
+    &["-i", "-p", "-l", "-o", "-F", "-J", "-L", "-R", "-D", "-b", "-c", "-E", "-e", "-m", "-O", "-Q", "-S", "-W", "-w", "-B"];
+
+/// Destino de `ssh ... usuario@host ...` como servidor (sin nombre todavía). None si no hay destino.
+fn destination(args: &[String]) -> Option<Server> {
+    let mut server = Server { port: 22, ..Default::default() };
+    let mut i = 0;
+    let mut dest = None;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if OPTIONS_WITH_VALUE.contains(&a) {
+            let value = args.get(i + 1).cloned().unwrap_or_default();
+            match a {
+                "-p" => server.port = value.parse().unwrap_or(22),
+                "-l" => server.user = value,
+                "-i" => server.identity = value,
+                _ => {}
+            }
+            i += 2;
+        } else if a.starts_with('-') {
+            i += 1;
+        } else {
+            dest = Some(a.to_string());
+            break;
+        }
+    }
+    let dest = dest?;
+    match dest.split_once('@') {
+        Some((user, host)) => {
+            server.user = user.into();
+            server.host = host.into();
+        }
+        None => server.host = dest,
+    }
+    Some(server)
+}
+
+/// `ssh <argumentos>`: el ssh real, con ayuda para la llave y para guardar el servidor.
+pub fn ssh_args(args: &[String]) -> i32 {
+    let mut args = args.to_vec();
+    // "-ipath" → "-i", "path"
+    if let Some(i) = args.iter().position(|a| a.starts_with("-i") && a.len() > 2) {
+        let path = args[i][2..].to_string();
+        args.splice(i..=i, ["-i".to_string(), path]);
+    }
+    if let Some(i) = args.iter().position(|a| a == "-i").filter(|i| i + 1 < args.len()) {
+        let written = expand_tilde(&args[i + 1]);
+        let key = if written.is_file() {
+            // Existe pero fuera de ~/.ssh (p. ej. en Descargas): ofrecer copiarla y protegerla.
+            if inside_ssh_dir(&written) { written } else { prepare_key(&written) }
+        } else {
+            eprintln!("{RED}No existe la llave:{RESET} {}", args[i + 1]);
+            match choose_key(Some(&written), "") {
+                Some(KeyChoice::Key(path)) => prepare_key(&path),
+                _ => return 1,
+            }
+        };
+        args[i + 1] = key.display().to_string();
+    }
+
+    let mut cmd = vec!["ssh".to_string()];
+    cmd.extend(args.iter().cloned());
+    let code = run_external(&cmd);
+    if code == 0 {
+        offer_save(&args);
+    }
+    code
+}
+
+/// Después de una conexión que funcionó: si el servidor no estaba guardado, ofrecer guardarlo.
+fn offer_save(args: &[String]) {
+    let Some(mut server) = destination(args) else { return };
+    let saved = load();
+    if saved.iter().any(|s| s.name == server.host || (s.host == server.host && s.user == server.user)) {
+        return;
+    }
+    if !std::io::stdin().is_terminal() || !confirm("¿Guardar este servidor para conectarte la próxima vez desde el selector de ssh?") {
+        return;
+    }
+    let suggestion = server.host.split('.').next().unwrap_or("servidor").to_string();
+    let Some(name) = ask("Nombre corto: ", &suggestion) else { return };
+    if name.contains(char::is_whitespace) || saved.iter().any(|s| s.name == name) {
+        eprintln!("Nombre no válido o ya usado: {name}");
+        return;
+    }
+    server.name = name.clone();
+    server.identity = server.identity.replace('\\', "/");
+    report(save(None, Some(&server)), &format!("{name} guardado → {}", server.target()));
 }
 
 #[cfg(test)]
@@ -294,6 +568,37 @@ mod tests {
         let names: Vec<String> = parse(&removed).into_iter().map(|s| s.name).collect();
         assert_eq!(names, ["dev", "qa"]);
         assert!(removed.contains("# mis servidores"));
+    }
+
+    #[test]
+    fn reconoce_descargas_repetidas() {
+        assert_eq!(base_name(Path::new("mysql-bastion-key (1).pem")), "mysql-bastion-key");
+        assert_eq!(base_name(Path::new("/root/.ssh/mysql-bastion-key.pem")), "mysql-bastion-key");
+        assert_eq!(base_name(Path::new("id_ed25519")), "id_ed25519");
+        assert_eq!(base_name(Path::new("llave (vieja).pem")), "llave (vieja)");
+    }
+
+    #[test]
+    fn entiende_el_destino_de_ssh() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let s = destination(&args(&["-i", "k.pem", "ubuntu@ec2-1-2-3-4.compute-1.amazonaws.com"])).unwrap();
+        assert_eq!((s.user.as_str(), s.host.as_str(), s.port, s.identity.as_str()), ("ubuntu", "ec2-1-2-3-4.compute-1.amazonaws.com", 22, "k.pem"));
+        let s = destination(&args(&["-p", "2222", "-l", "root", "-v", "10.0.0.5", "uptime"])).unwrap();
+        assert_eq!((s.user.as_str(), s.host.as_str(), s.port), ("root", "10.0.0.5", 2222));
+        assert!(destination(&args(&["-V"])).is_none());
+    }
+
+    #[test]
+    fn detecta_llaves_por_contenido() {
+        let dir = std::env::temp_dir().join(format!("fysh-keys-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("aws.pem"), "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n").unwrap();
+        fs::write(dir.join("id_ed25519.pub"), "ssh-ed25519 AAAA usuario").unwrap();
+        fs::write(dir.join("notas.pem"), "no es una llave").unwrap();
+        assert!(is_private_key(&dir.join("aws.pem")));
+        assert!(!is_private_key(&dir.join("id_ed25519.pub")));
+        assert!(!is_private_key(&dir.join("notas.pem")));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
