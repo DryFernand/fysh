@@ -7,7 +7,7 @@ publicada, así siempre hay algo usable. Tamaño: **S** (horas), **M** (un día)
 |---|---|---|---|
 | 0. Base técnica ✅ | — | `fysh -c`, salida sin colores fuera de la terminal (el módulo de procesos pasó a la Fase 2) | M |
 | 1. Shell completa ✅ | v0.3.0 | Pipes, redirecciones, `&&` `\|\|` `;`, comodines | L |
-| 2. Desarrollo diario | v0.4.0 | `run`, `puertos` + `procesos`, `docker` | M + S + M |
+| 2. Desarrollo diario ✅ | v0.4.0 | `run`, `puertos` + `procesos`, `docker` | M + S + M |
 | 3. Datos y servidores | v0.5.0 | `tunel`, `db` | M + M |
 | 4. Comodidad | v0.6.0 | Ctrl+R difuso, entorno por proyecto, notificaciones | M + M + S |
 | 5. APIs | v0.7.0 | `http` | M |
