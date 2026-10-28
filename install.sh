@@ -10,8 +10,14 @@ case "$(uname -s)-$(uname -m)" in
     *) echo "fysh: plataforma no soportada: $(uname -s) $(uname -m)" >&2; exit 1 ;;
 esac
 
+URL="https://github.com/$REPO/releases/latest/download/$ASSET"
 mkdir -p "$HOME/.local/bin"
-curl -fsSL "https://github.com/$REPO/releases/latest/download/$ASSET" -o "$HOME/.local/bin/fysh"
+# curl si está; si no, wget (algunos servidores mínimos solo traen uno de los dos).
+if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$URL" -o "$HOME/.local/bin/fysh"
+else
+    wget -qO "$HOME/.local/bin/fysh" "$URL"
+fi
 chmod +x "$HOME/.local/bin/fysh"
 echo "fysh instalada en ~/.local/bin/fysh"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "Agrega ~/.local/bin a tu PATH para usar 'fysh'." ;; esac

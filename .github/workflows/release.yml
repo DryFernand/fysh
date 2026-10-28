@@ -15,22 +15,29 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            bin: fysh.exe
             asset: fysh-windows-x86_64.exe
+            out: target/release/fysh.exe
+          # Linux estático (musl): funciona en cualquier Linux x86_64, también en Alpine.
           - os: ubuntu-latest
-            bin: fysh
             asset: fysh-linux-x86_64
+            target: x86_64-unknown-linux-musl
+            out: target/x86_64-unknown-linux-musl/release/fysh
           - os: macos-latest
-            bin: fysh
             asset: fysh-macos-aarch64
+            out: target/release/fysh
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo test
-      - run: cargo build --release
       - shell: bash
-        run: cp target/release/${{ matrix.bin }} ${{ matrix.asset }}
+        run: cargo build --release ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+      - shell: bash
+        run: cp ${{ matrix.out }} ${{ matrix.asset }}
       - uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.asset }}

@@ -56,6 +56,36 @@ impl Agent {
             Agent::OpenCode => vec!["run".into(), prompt.into()],
         }
     }
+
+    /// Argumentos para abrir una sesión interactiva que empieza con `prompt`.
+    fn interactive_args(self, prompt: &str) -> Vec<String> {
+        match self {
+            Agent::Claude => vec![prompt.into()],
+            Agent::Agy => vec!["-i".into(), prompt.into()],
+            Agent::OpenCode => vec!["--prompt".into(), prompt.into()],
+        }
+    }
+}
+
+/// Abre el asistente en tu PC, ya instruido para trabajar en el servidor `name` por ssh.
+/// No hace falta instalar nada en el servidor: el agente ejecuta `ssh name '<comando>'`.
+pub fn agent_for_server(name: &str, target: &str) -> i32 {
+    let Some(agent) = current() else {
+        eprintln!("No hay ninguna IA instalada. Instala Claude Code: irm https://claude.ai/install.ps1 | iex");
+        return 1;
+    };
+    let Some(program) = agent.program() else { return 1 };
+    let prompt = format!(
+        "Vas a trabajar en el servidor remoto «{name}» ({target}). No estás dentro de él: ejecuta cada comando \
+         con `ssh {name} '<comando>'` (ya está configurado en ~/.ssh/config, con su llave) y copia archivos con \
+         `scp`. Antes de cualquier cambio que modifique el servidor, explícame qué vas a hacer y espera mi \
+         confirmación. Para empezar, comprueba la conexión con `ssh {name} 'uname -a; whoami'`, dime en una línea \
+         qué sistema es y espera mis instrucciones. Responde en español."
+    );
+    println!("{GRAY}Abriendo {} para trabajar en {name}…{RESET}", agent.label());
+    let mut cmd = vec![program.display().to_string()];
+    cmd.extend(agent.interactive_args(&prompt));
+    crate::run_external(&cmd)
 }
 
 fn choice_file() -> Option<PathBuf> {

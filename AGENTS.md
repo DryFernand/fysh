@@ -17,5 +17,7 @@ fysh es una shell propia escrita en Rust (Windows, Linux y Mac).
 El tag dispara `.github/workflows/release.yml`, que compila para Windows, Linux y Mac y publica en GitHub Releases:
 `fysh-windows-x86_64.exe`, `fysh-linux-x86_64`, `fysh-macos-aarch64`.
 `install.ps1` e `install.sh` descargan esos nombres exactos: si cambias uno, cambia los tres archivos.
+El de Linux se compila estático (musl) para que funcione en cualquier distribución; `ssh` en fysh
+lo instala en servidores remotos con `install.sh`.
 
 Revisa que el workflow termine en verde antes de dar la versión por publicada.

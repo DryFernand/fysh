@@ -186,21 +186,97 @@ pub fn ssh_cmd() -> i32 {
 }
 
 fn server_menu(s: &Server) -> i32 {
-    let actions = ["Conectar", "Subir archivos", "Bajar archivos", "Editar", "Borrar"];
+    let actions = ["Conectar", "Abrir agente de IA para este servidor", "Subir archivos", "Bajar archivos", "Editar", "Borrar"];
     let rows: Vec<Vec<String>> = actions.iter().map(|a| vec![a.to_string()]).collect();
     println!("{GRAY}{} → {}{RESET}", s.name, s.target());
     match picker::select_one(&["¿Qué quieres hacer?"], &rows) {
-        Some(0) => run_external(&["ssh".into(), s.name.clone()]),
-        Some(1) => upload(s),
-        Some(2) => download(s),
-        Some(3) => edit(Some(s)),
-        Some(4) => {
+        Some(0) => connect(&s.name),
+        Some(1) => crate::ai::agent_for_server(&s.name, &s.target()),
+        Some(2) => upload(s),
+        Some(3) => download(s),
+        Some(4) => edit(Some(s)),
+        Some(5) => {
             if !confirm(&format!("¿Borrar {} de ~/.ssh/config? (queda copia en config.fysh-respaldo)", s.name)) {
                 return 0;
             }
             report(save(Some(&s.name), None), &format!("{} borrado", s.name))
         }
         _ => 0,
+    }
+}
+
+// ---------- fysh dentro del servidor ----------
+
+const INSTALL_URL: &str = "https://raw.githubusercontent.com/DryFernand/fysh/main/install.sh";
+
+/// Servidores donde se eligió "no volver a preguntar" por instalar fysh.
+fn no_fysh_file() -> Option<PathBuf> {
+    home().map(|h| h.join(".fysh").join("ssh-sin-fysh"))
+}
+
+fn skips_fysh(name: &str) -> bool {
+    no_fysh_file().and_then(|f| fs::read_to_string(f).ok()).is_some_and(|t| t.lines().any(|l| l.trim() == name))
+}
+
+fn remember_no_fysh(name: &str) {
+    let Some(file) = no_fysh_file() else { return };
+    let mut text = fs::read_to_string(&file).unwrap_or_default();
+    text += &format!("{name}\n");
+    let _ = file.parent().map(fs::create_dir_all);
+    let _ = fs::write(file, text);
+}
+
+/// Ruta de fysh en el servidor (en el PATH o en ~/.local/bin).
+/// Err si no se pudo conectar (ssh ya mostró el error).
+fn remote_fysh(name: &str) -> Result<Option<String>, i32> {
+    let script = r#"command -v fysh 2>/dev/null || { [ -x "$HOME/.local/bin/fysh" ] && echo "$HOME/.local/bin/fysh"; }"#;
+    let out = std::process::Command::new("ssh")
+        .args([name, script])
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|_| 127)?;
+    if out.status.code() == Some(255) {
+        return Err(255); // 255 = ssh no pudo conectar o autenticarse
+    }
+    let path = String::from_utf8_lossy(&out.stdout).lines().last().unwrap_or("").trim().to_string();
+    Ok(path.starts_with('/').then_some(path))
+}
+
+/// Conectar: si el servidor tiene fysh, entra con fysh; si no, ofrece instalarlo
+/// (en ~/.local/bin, sin sudo) o entrar normal.
+fn connect(name: &str) -> i32 {
+    let plain = || run_external(&["ssh".into(), name.into()]);
+    if skips_fysh(name) || !std::io::stdin().is_terminal() {
+        return plain();
+    }
+    println!("{GRAY}Buscando fysh en {name}…{RESET}");
+    match remote_fysh(name) {
+        Err(code) => code,
+        Ok(Some(path)) => run_external(&["ssh".into(), "-t".into(), name.into(), path]),
+        Ok(None) => {
+            let rows = vec![
+                vec!["Instalar fysh en el servidor y entrar con fysh".into(), format!("{GRAY}en ~/.local/bin, sin sudo{RESET}")],
+                vec!["Entrar normal".into(), format!("{GRAY}la terminal del servidor (bash){RESET}")],
+                vec!["Entrar normal y no volver a preguntar".into(), String::new()],
+            ];
+            println!("{GRAY}{name} no tiene fysh.{RESET}");
+            match picker::select_one(&["¿Cómo entrar?", ""], &rows) {
+                Some(0) => {
+                    let install = format!("(curl -fsSL {INSTALL_URL} || wget -qO- {INSTALL_URL}) | sh");
+                    if run_external(&["ssh".into(), name.into(), install]) != 0 {
+                        eprintln!("{RED}No se pudo instalar fysh en {name}.{RESET} {GRAY}Entro normal.{RESET}");
+                        return plain();
+                    }
+                    run_external(&["ssh".into(), "-t".into(), name.into(), "~/.local/bin/fysh".into()])
+                }
+                Some(1) => plain(),
+                Some(2) => {
+                    remember_no_fysh(name);
+                    plain()
+                }
+                _ => 0,
+            }
+        }
     }
 }
 
@@ -484,6 +560,12 @@ fn destination(args: &[String]) -> Option<Server> {
 
 /// `ssh <argumentos>`: el ssh real, con ayuda para la llave y para guardar el servidor.
 pub fn ssh_args(args: &[String]) -> i32 {
+    // `ssh <servidor guardado>` entra igual que "Conectar" del selector (con fysh si lo tiene).
+    if let [name] = args {
+        if load().iter().any(|s| &s.name == name) {
+            return connect(name);
+        }
+    }
     let mut args = args.to_vec();
     // "-ipath" → "-i", "path"
     if let Some(i) = args.iter().position(|a| a.starts_with("-i") && a.len() > 2) {
