@@ -19,6 +19,7 @@ pub fn run(args: &[String], shell: &mut Shell) -> Option<i32> {
         "help" => help(),
         "claude" if rest.is_empty() => crate::agents::claude_picker(),
         "agy" | "antigravity" if rest.is_empty() => crate::agents::agy_picker(),
+        "opencode" => crate::agents::opencode(rest),
         _ => return None,
     };
     Some(code)
@@ -212,8 +213,8 @@ fn help() -> i32 {
     table::print(&["Comando", "Descripción"], &[Align::Left, Align::Left], &rows);
     println!("{GRAY}Variables: $NOMBRE usa una variable, $? es el código del último comando.{RESET}");
     println!("{GRAY}Cualquier otro comando se busca en el PATH (git, notepad, ping...).{RESET}");
-    println!("{GRAY}Agentes de IA: claude (Claude Code) y agy o antigravity (Antigravity) muestran tus{RESET}");
-    println!("{GRAY}conversaciones de esta carpeta para reanudar una o empezar otra.{RESET}");
+    println!("{GRAY}Agentes de IA: claude (Claude Code), agy o antigravity (Antigravity) y opencode (OpenCode){RESET}");
+    println!("{GRAY}muestran tus conversaciones de esta carpeta para reanudar una o empezar otra.{RESET}");
     0
 }
 

@@ -29,6 +29,28 @@ pub fn agy_picker() -> i32 {
     pick("agy", "--conversation", list_agy_sessions())
 }
 
+/// `opencode`: sin argumentos, el selector; con argumentos, el CLI de OpenCode directo.
+pub fn opencode(args: &[String]) -> i32 {
+    let program = opencode_program();
+    if args.is_empty() {
+        return pick(&program, "--session", list_opencode_sessions());
+    }
+    let mut cmd = vec![program];
+    cmd.extend_from_slice(args);
+    crate::run_external(&cmd)
+}
+
+/// La app de escritorio de OpenCode pone en el PATH un `opencode` que abre la ventana de la app,
+/// no la terminal. Si está instalada, usar el CLI que trae dentro; si no, el `opencode` normal.
+fn opencode_program() -> String {
+    let desktop_cli = std::env::var_os("LOCALAPPDATA")
+        .map(|d| PathBuf::from(d).join(r"Programs\@opencode-aidesktop\resources\opencode-cli.exe"));
+    match desktop_cli {
+        Some(p) if p.is_file() => p.to_string_lossy().into_owned(),
+        _ => "opencode".into(),
+    }
+}
+
 /// Muestra el selector y abre el agente: nueva conversación o `<program> <resume_flag> <id>`.
 fn pick(program: &str, resume_flag: &str, sessions: Vec<Session>) -> i32 {
     // Sin conversaciones previas, o sin teclado (entrada por pipe): abrir el agente directo.
@@ -165,6 +187,34 @@ fn list_agy_sessions() -> Vec<Session> {
             let modified = DateTime::parse_from_str(&modified, "%Y-%m-%d %H:%M:%S%.f%:z").ok()?.with_timezone(&Local);
             // Sin título ni vista previa = conversación abierta y nunca usada: no se muestra.
             let title = if !title.is_empty() { title } else if !preview.is_empty() { preview } else { return None };
+            Some(Session { id, title, modified })
+        })
+        .collect()
+}
+
+/// Sesiones de OpenCode (2.x) de la carpeta actual, la más reciente primero.
+/// Están en ~/.local/share/opencode/opencode.db, tabla session_v2. Sin subagentes ni archivadas.
+fn list_opencode_sessions() -> Vec<Session> {
+    use rusqlite::{Connection, OpenFlags};
+    let (Some(home), Ok(cwd)) = (home(), std::env::current_dir()) else { return Vec::new() };
+    let db = home.join(".local").join("share").join("opencode").join("opencode.db");
+    let Ok(conn) = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY) else { return Vec::new() };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, COALESCE(NULLIF(title, ''), slug), time_updated, directory
+         FROM session_v2
+         WHERE parent_id IS NULL AND time_archived IS NULL
+         ORDER BY time_updated DESC",
+    ) else {
+        return Vec::new();
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?))
+    });
+    let Ok(rows) = rows else { return Vec::new() };
+    rows.filter_map(Result::ok)
+        .filter(|(.., dir)| same_dir(Path::new(dir), &cwd))
+        .filter_map(|(id, title, millis, _)| {
+            let modified = DateTime::from_timestamp_millis(millis)?.with_timezone(&Local);
             Some(Session { id, title, modified })
         })
         .collect()
