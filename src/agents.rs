@@ -37,7 +37,7 @@ pub fn opencode(args: &[String]) -> i32 {
 
 /// La app de escritorio de OpenCode pone en el PATH un `opencode` que abre la ventana de la app,
 /// no la terminal. Si está instalada, usar el CLI que trae dentro; si no, el `opencode` normal.
-fn opencode_program() -> String {
+pub fn opencode_program() -> String {
     let desktop_cli = std::env::var_os("LOCALAPPDATA")
         .map(|d| PathBuf::from(d).join(r"Programs\@opencode-aidesktop\resources\opencode-cli.exe"));
     match desktop_cli {

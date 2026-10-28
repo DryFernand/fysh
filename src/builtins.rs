@@ -30,6 +30,13 @@ pub fn run(args: &[String], shell: &mut Shell) -> Option<i32> {
         }
         "unalias" => crate::aliases::unalias_cmd(shell, rest),
         "config" => crate::aliases::config_cmd(shell),
+        "z" => crate::jump::z_cmd(rest),
+        "agent" => crate::ai::agent_cmd(),
+        "explica" => crate::ai::explica_cmd(shell),
+        cmd if cmd.starts_with("ins:") => {
+            let task = shell.line.trim_start().strip_prefix("ins:").unwrap_or("").to_string();
+            crate::ai::ins_cmd(shell, &task)
+        }
         "env" if rest.is_empty() => crate::envvars::env_cmd(),
         "path" if rest.is_empty() => crate::envvars::path_cmd(),
         "claude" if rest.is_empty() => crate::agents::claude_picker(),
@@ -215,6 +222,7 @@ fn human_size(bytes: u64) -> String {
 fn help() -> i32 {
     let rows: Vec<Vec<String>> = [
         ("cd [carpeta]", "Cambia de carpeta (~ = tu carpeta de usuario)"),
+        ("z [palabra]", "Salta a una carpeta frecuente (z crm); sin nada, selector"),
         ("dir [carpeta]", "Lista el contenido de una carpeta (también: ls)"),
         ("cls", "Limpia la pantalla (también: clear)"),
         ("pwd", "Muestra la carpeta actual"),
@@ -233,6 +241,9 @@ fn help() -> i32 {
         ("alias [n = comando]", "Atajos: sin nada los lista; con nombre = comando crea uno"),
         ("unalias <nombre>", "Borra un alias"),
         ("config", "Edita ~/.fyshrc (se ejecuta al abrir fysh) y lo recarga"),
+        ("agent", "Elige qué IA instalada es tu asistente (para explica e ins:)"),
+        ("explica", "El asistente explica el último error y sugiere cómo arreglarlo"),
+        ("ins: <tarea>", "El asistente escribe el comando para una tarea (ins: borrar rama x)"),
         ("help", "Muestra esta ayuda"),
         ("exit [código]", "Cierra fysh"),
     ]

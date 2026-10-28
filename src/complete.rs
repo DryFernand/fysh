@@ -1,6 +1,8 @@
-//! Editor de línea de fysh: autocompletado con Tab, sugerencias del historial y prompt con colores.
+//! Editor de línea de fysh: autocompletado con Tab, sugerencias del historial, colores mientras
+//! escribes (comando verde si existe, rojo si no) y prompt con colores.
 
 use crate::git;
+use crate::{BLUE, GREEN, RED, RESET, YELLOW};
 use rustyline::completion::{Completer, FilenameCompleter, Pair};
 use rustyline::highlight::Highlighter;
 use rustyline::hint::{Hinter, HistoryHinter};
@@ -8,11 +10,13 @@ use rustyline::validate::Validator;
 use rustyline::{Context, Helper};
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::HashSet;
 
 /// Comandos propios de fysh y agentes, para completar la primera palabra.
 const COMMANDS: &[&str] = &[
     "cd", "cls", "clear", "dir", "ls", "pwd", "mkdir", "touch", "cat", "cp", "mv", "rm", "open", "echo", "set", "env",
-    "path", "history", "alias", "unalias", "config", "help", "exit", "git", "claude", "agy", "antigravity", "opencode",
+    "path", "history", "alias", "unalias", "config", "help", "exit", "z", "agent", "explica", "ins:", "git", "claude",
+    "agy", "antigravity", "opencode",
 ];
 
 /// Catálogo de subcomandos de git.
@@ -38,6 +42,8 @@ pub struct FyshHelper {
     pub aliases: RefCell<Vec<String>>,
     files: FilenameCompleter,
     hinter: HistoryHinter,
+    /// Programas del PATH (en minúsculas, sin extensión) y el PATH con el que se calcularon.
+    path_cache: RefCell<(String, HashSet<String>)>,
 }
 
 impl FyshHelper {
@@ -47,8 +53,94 @@ impl FyshHelper {
             aliases: RefCell::new(Vec::new()),
             files: FilenameCompleter::new(),
             hinter: HistoryHinter::new(),
+            path_cache: RefCell::new((String::new(), HashSet::new())),
         }
     }
+
+    /// ¿Existe este comando? Propio de fysh, alias, ruta a un archivo o programa del PATH.
+    fn is_command(&self, name: &str) -> bool {
+        if COMMANDS.contains(&name) || name.starts_with("ins:") || self.aliases.borrow().iter().any(|a| a == name) {
+            return true;
+        }
+        if name.contains(['/', '\\']) {
+            return std::path::Path::new(name).is_file();
+        }
+        let path = std::env::var("PATH").unwrap_or_default();
+        let mut cache = self.path_cache.borrow_mut();
+        if cache.0 != path {
+            *cache = (path.clone(), scan_path(&path));
+        }
+        cache.1.contains(&name.to_lowercase())
+    }
+}
+
+/// Nombres de los programas del PATH. En Windows solo .exe/.cmd/.bat/.com, guardados sin extensión
+/// y también con ella (para que "notepad" y "notepad.exe" cuenten).
+fn scan_path(path: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for dir in std::env::split_paths(path) {
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        for entry in entries.filter_map(Result::ok) {
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if cfg!(windows) {
+                if let Some((stem, ext)) = name.rsplit_once('.') {
+                    if ["exe", "cmd", "bat", "com"].contains(&ext) {
+                        names.insert(stem.to_string());
+                        names.insert(name);
+                    }
+                }
+            } else {
+                names.insert(name);
+            }
+        }
+    }
+    names
+}
+
+/// Pinta la línea: primera palabra verde (existe) o roja (no existe), texto entre comillas
+/// amarillo y $VARIABLES azul. Solo agrega colores: no cambia el ancho del texto.
+fn colorize(line: &str, is_command: impl Fn(&str) -> bool) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() && chars[i].is_whitespace() {
+        out.push(chars[i]);
+        i += 1;
+    }
+    let start = i;
+    while i < chars.len() && !chars[i].is_whitespace() {
+        i += 1;
+    }
+    if i > start {
+        let word: String = chars[start..i].iter().collect();
+        let color = if is_command(&word) { GREEN } else { RED };
+        out += &format!("{color}{word}{RESET}");
+    }
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '"' || c == '\'' {
+            let end = chars[i + 1..].iter().position(|&x| x == c).map_or(chars.len(), |p| i + 1 + p + 1);
+            let text: String = chars[i..end].iter().collect();
+            out += &format!("{YELLOW}{text}{RESET}");
+            i = end;
+        } else if c == '$' {
+            let mut end = i + 1;
+            if chars.get(end) == Some(&'?') {
+                end += 1;
+            } else {
+                while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+                    end += 1;
+                }
+            }
+            let text: String = chars[i..end].iter().collect();
+            out += &format!("{BLUE}{text}{RESET}");
+            i = end;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Candidatos que empiezan con `prefix`, sin repetir.
@@ -121,6 +213,15 @@ impl Highlighter for FyshHelper {
     fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
         Cow::Owned(format!("{}{hint}{}", crate::GRAY, crate::RESET))
     }
+
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
+        Cow::Owned(colorize(line, |w| self.is_command(w)))
+    }
+
+    /// Volver a pintar con cada tecla (el color del comando cambia mientras se escribe).
+    fn highlight_char(&self, _line: &str, _pos: usize, _forced: bool) -> bool {
+        true
+    }
 }
 
 impl Validator for FyshHelper {}
@@ -132,6 +233,19 @@ mod tests {
 
     fn names(p: Option<Vec<Pair>>) -> Vec<String> {
         p.unwrap_or_default().into_iter().map(|p| p.replacement).collect()
+    }
+
+    #[test]
+    fn pinta_comandos_comillas_y_variables() {
+        let known = |w: &str| w == "git";
+        let out = colorize("git commit -m \"hola mundo\" $USER $?", known);
+        assert!(out.starts_with(&format!("{GREEN}git{RESET}")));
+        assert!(out.contains(&format!("{YELLOW}\"hola mundo\"{RESET}")));
+        assert!(out.contains(&format!("{BLUE}$USER{RESET}")) && out.contains(&format!("{BLUE}$?{RESET}")));
+        assert!(colorize("  gti status", known).starts_with(&format!("  {RED}gti{RESET}")));
+        // Los colores no cambian el texto visible.
+        let line = "echo \"sin cerrar $X";
+        assert_eq!(crate::table::strip_ansi(&colorize(line, known)), line);
     }
 
     #[test]

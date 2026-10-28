@@ -1,4 +1,5 @@
 mod agents;
+mod ai;
 mod aliases;
 mod ask;
 mod builtins;
@@ -7,6 +8,7 @@ mod envvars;
 mod files;
 mod git;
 mod history;
+mod jump;
 mod parser;
 mod picker;
 mod table;
@@ -16,6 +18,7 @@ use rustyline::history::FileHistory;
 use rustyline::{CompletionType, Config, Editor};
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 // Colores ANSI. Cambia los números para cambiar el estilo (38;2;R;G;B = color RGB).
 pub const RED: &str = "\x1b[38;2;255;70;70m";
@@ -34,6 +37,17 @@ const BANNER: &str = r"
   ██║        ██║   ███████║██║  ██║
   ╚═╝        ╚═╝   ╚══════╝╚═╝  ╚═╝";
 
+/// Desde cuánto tarda un comando para mostrar su duración en el prompt.
+const SLOW: Duration = Duration::from_secs(5);
+
+/// Un comando que falló, para que `explica` se lo pase al asistente.
+pub struct Failure {
+    pub command: String,
+    pub code: i32,
+    /// Lo que se vio en pantalla mientras corría (solo en Windows).
+    pub output: Option<String>,
+}
+
 /// Estado compartido de la shell. Agrega campos aquí.
 pub struct Shell {
     pub last_status: i32,
@@ -44,11 +58,25 @@ pub struct Shell {
     pub line: String,
     /// true mientras se ejecuta ~/.fyshrc al abrir fysh.
     pub loading_rc: bool,
+    /// Texto que aparece ya escrito en la siguiente línea (history, explica, ins:).
+    pub pending: Option<String>,
+    /// Cuánto tardó el último comando.
+    pub last_duration: Duration,
+    pub last_failure: Option<Failure>,
 }
 
 impl Shell {
     pub fn new() -> Self {
-        Shell { last_status: 0, running: true, aliases: Default::default(), line: String::new(), loading_rc: false }
+        Shell {
+            last_status: 0,
+            running: true,
+            aliases: Default::default(),
+            line: String::new(),
+            loading_rc: false,
+            pending: None,
+            last_duration: Duration::ZERO,
+            last_failure: None,
+        }
     }
 }
 
@@ -60,10 +88,21 @@ pub fn execute(shell: &mut Shell, line: &str) {
     }
     let args = aliases::expand(shell, args);
     shell.line = line.to_string();
+    let start_row = ai::console_row();
+    let started = Instant::now();
     shell.last_status = match builtins::run(&args, shell) {
         Some(code) => code,
         None => run_external(&args),
     };
+    shell.last_duration = started.elapsed();
+    // Los comandos de IA no se guardan como "último error": explica debe ver el comando anterior.
+    if shell.last_status != 0 && !["explica", "agent"].contains(&args[0].as_str()) && !args[0].starts_with("ins:") {
+        shell.last_failure = Some(Failure {
+            command: line.trim().to_string(),
+            code: shell.last_status,
+            output: start_row.and_then(ai::console_text_since),
+        });
+    }
 }
 
 fn main() {
@@ -91,12 +130,17 @@ fn main() {
         }
     };
     editor.set_helper(Some(complete::FyshHelper::new()));
+    if let Some(helper) = editor.helper() {
+        *helper.aliases.borrow_mut() = shell.aliases.keys().cloned().collect();
+    }
     let history_file = history_path();
     if let Some(h) = &history_file {
         editor.load_history(h).ok();
     }
-    // Comando elegido en `history`: aparece ya escrito en la siguiente línea.
-    let mut pending: Option<String> = None;
+    let mut last_dir = std::env::current_dir().ok();
+    if let Some(d) = &last_dir {
+        jump::visit(d);
+    }
 
     while shell.running {
         let colored = prompt(&shell);
@@ -104,7 +148,7 @@ fn main() {
             *helper.colored_prompt.borrow_mut() = colored.clone();
         }
         let plain = table::strip_ansi(&colored);
-        let read = match pending.take() {
+        let read = match shell.pending.take() {
             Some(cmd) => editor.readline_with_initial(&plain, (&cmd, "")),
             None => editor.readline(&plain),
         };
@@ -121,8 +165,9 @@ fn main() {
         let args = parser::parse(&line, &shell);
         if args.first().is_some_and(|a| a == "history") && args.len() <= 2 {
             let entries = editor.history().iter().map(String::as_str);
-            pending = history::pick(entries, args.get(1).map(String::as_str));
+            shell.pending = history::pick(entries, args.get(1).map(String::as_str));
             shell.last_status = 0;
+            shell.last_duration = Duration::ZERO;
             continue;
         }
 
@@ -130,28 +175,61 @@ fn main() {
         if let Some(helper) = editor.helper() {
             *helper.aliases.borrow_mut() = shell.aliases.keys().cloned().collect();
         }
+        // Registrar la carpeta si cambió, para `z`.
+        let dir = std::env::current_dir().ok();
+        if dir != last_dir {
+            if let Some(d) = &dir {
+                jump::visit(d);
+            }
+            last_dir = dir;
+        }
     }
     std::process::exit(shell.last_status);
 }
 
 /// Historial guardado entre sesiones: ~/.fysh_history
 fn history_path() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(|h| PathBuf::from(h).join(".fysh_history"))
+    home().map(|h| h.join(".fysh_history"))
 }
 
-/// Prompt: "fysh ~\carpeta (rama ●3) ❯". Si el último comando falló, muestra su código.
-fn prompt(shell: &Shell) -> String {
-    let mut cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
-    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
-    if !home.is_empty() && cwd.starts_with(&home) {
-        cwd = format!("~{}", &cwd[home.len()..]);
+pub fn home() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
+}
+
+/// Ruta con la carpeta de usuario abreviada como ~
+pub fn tilde(path: &std::path::Path) -> String {
+    let text = path.display().to_string();
+    match home().map(|h| h.display().to_string()) {
+        Some(h) if !h.is_empty() && text.starts_with(&h) => format!("~{}", &text[h.len()..]),
+        _ => text,
     }
+}
+
+/// Prompt: "fysh ~\carpeta (rama ●3) ⏱ 12s [1] ❯". La duración sale si el comando tardó más de 5 s;
+/// el código, si falló.
+fn prompt(shell: &Shell) -> String {
+    let cwd = std::env::current_dir().map(|p| tilde(&p)).unwrap_or_default();
+    let took = if shell.last_duration >= SLOW {
+        format!("{YELLOW}⏱ {}{RESET} ", format_duration(shell.last_duration))
+    } else {
+        String::new()
+    };
     let status = match shell.last_status {
         0 => String::new(),
         code => format!("{RED}[{code}] "),
     };
     let git = git::prompt_segment();
-    format!("{BOLD}{RED}fysh{RESET} {GRAY}{cwd}{RESET}{git} {status}{RED}❯{RESET} ")
+    format!("{BOLD}{RED}fysh{RESET} {GRAY}{cwd}{RESET}{git} {took}{status}{RED}❯{RESET} ")
+}
+
+/// 12s · 2m 05s · 1h 03m
+fn format_duration(d: Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0..=59 => format!("{s}s"),
+        60..=3599 => format!("{}m {:02}s", s / 60, s % 60),
+        _ => format!("{}h {:02}m", s / 3600, (s % 3600) / 60),
+    }
 }
 
 /// Lanza un programa externo y espera a que termine.
@@ -169,10 +247,18 @@ pub fn run_external(args: &[String]) -> i32 {
     }
 }
 
+/// Ruta completa de un programa del PATH, o None si no está instalado.
+pub fn which(name: &str) -> Option<PathBuf> {
+    if cfg!(windows) {
+        return find_program(name);
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(name)).find(|p| p.is_file())
+}
+
 /// En Windows busca el programa en el PATH probando .exe, .com, .cmd y .bat.
 /// Rust solo prueba .exe, y muchas herramientas (npm, code, agentes de IA) son .cmd.
 #[cfg(windows)]
-fn find_program(name: &str) -> Option<std::path::PathBuf> {
+fn find_program(name: &str) -> Option<PathBuf> {
     let path = std::path::Path::new(name);
     if path.extension().is_some() || path.components().count() > 1 {
         return None; // ya trae extensión o ruta: se usa tal cual
@@ -194,15 +280,27 @@ fn find_program(name: &str) -> Option<std::path::PathBuf> {
 }
 
 #[cfg(not(windows))]
-fn find_program(_name: &str) -> Option<std::path::PathBuf> {
+fn find_program(_name: &str) -> Option<PathBuf> {
     None // en Linux/Mac el sistema ya busca en el PATH
 }
 
 /// Cómo instalar los agentes de IA conocidos, si no están.
-fn install_hint(name: &str) -> Option<&'static str> {
+pub fn install_hint(name: &str) -> Option<&'static str> {
     match name {
         "claude" if cfg!(windows) => Some("irm https://claude.ai/install.ps1 | iex"),
         "claude" => Some("curl -fsSL https://claude.ai/install.sh | bash"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formatea_duraciones() {
+        assert_eq!(format_duration(Duration::from_secs(12)), "12s");
+        assert_eq!(format_duration(Duration::from_secs(125)), "2m 05s");
+        assert_eq!(format_duration(Duration::from_secs(3780)), "1h 03m");
     }
 }
