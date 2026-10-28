@@ -11,6 +11,7 @@ mod history;
 mod jump;
 mod parser;
 mod picker;
+mod ssh;
 mod table;
 
 use rustyline::error::ReadlineError;

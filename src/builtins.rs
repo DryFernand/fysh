@@ -31,6 +31,7 @@ pub fn run(args: &[String], shell: &mut Shell) -> Option<i32> {
         "unalias" => crate::aliases::unalias_cmd(shell, rest),
         "config" => crate::aliases::config_cmd(shell),
         "z" => crate::jump::z_cmd(rest),
+        "ssh" if rest.is_empty() => crate::ssh::ssh_cmd(),
         "agent" => crate::ai::agent_cmd(),
         "explica" => crate::ai::explica_cmd(shell),
         cmd if cmd.starts_with("ins:") => {
@@ -241,6 +242,7 @@ fn help() -> i32 {
         ("alias [n = comando]", "Atajos: sin nada los lista; con nombre = comando crea uno"),
         ("unalias <nombre>", "Borra un alias"),
         ("config", "Edita ~/.fyshrc (se ejecuta al abrir fysh) y lo recarga"),
+        ("ssh", "Servidores: conectar, agregar, editar, borrar, subir y bajar archivos"),
         ("agent", "Elige qué IA instalada es tu asistente (para explica e ins:)"),
         ("explica", "El asistente explica el último error y sugiere cómo arreglarlo"),
         ("ins: <tarea>", "El asistente escribe el comando para una tarea (ins: borrar rama x)"),

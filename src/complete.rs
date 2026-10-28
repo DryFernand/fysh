@@ -15,7 +15,7 @@ use std::collections::HashSet;
 /// Comandos propios de fysh y agentes, para completar la primera palabra.
 const COMMANDS: &[&str] = &[
     "cd", "cls", "clear", "dir", "ls", "pwd", "mkdir", "touch", "cat", "cp", "mv", "rm", "open", "echo", "set", "env",
-    "path", "history", "alias", "unalias", "config", "help", "exit", "z", "agent", "explica", "ins:", "git", "claude",
+    "path", "history", "alias", "unalias", "config", "help", "exit", "z", "ssh", "agent", "explica", "ins:", "git", "claude",
     "agy", "antigravity", "opencode",
 ];
 
@@ -161,6 +161,7 @@ fn candidates(words: &[&str], current: &str, aliases: &[String]) -> Option<Vec<P
     match words {
         [] => Some(matching(current, owned(COMMANDS).into_iter().chain(aliases.iter().cloned()))),
         ["unalias"] => Some(matching(current, aliases.iter().cloned())),
+        ["ssh"] => Some(matching(current, crate::ssh::host_names())),
         ["git"] => Some(matching(current, owned(GIT_SUBCOMMANDS))),
         ["git", sub, ..] => {
             let mut opts = Vec::new();
