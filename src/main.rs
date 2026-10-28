@@ -152,7 +152,24 @@ pub fn shell_name() -> String {
     }
 }
 
+/// En Linux/Mac, ~/.local/bin es donde se instalan fysh, agy, claude y otras herramientas por
+/// usuario, pero muchos sistemas (contenedores, servidores mínimos) no lo tienen en el PATH.
+fn add_local_bin_to_path() {
+    if cfg!(windows) {
+        return;
+    }
+    let Some(bin) = home().map(|h| h.join(".local").join("bin")).filter(|b| b.is_dir()) else { return };
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    if std::env::split_paths(&path).any(|p| p == bin) {
+        return;
+    }
+    if let Ok(joined) = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path))) {
+        std::env::set_var("PATH", joined);
+    }
+}
+
 fn main() {
+    add_local_bin_to_path();
     let argv: Vec<String> = std::env::args().collect();
     match argv.get(1).map(String::as_str) {
         Some("--version") => {
