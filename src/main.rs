@@ -106,15 +106,53 @@ pub fn execute(shell: &mut Shell, line: &str) {
     }
 }
 
+/// Nombre del servidor si fysh corre dentro de una conexión ssh, para el prompt "fysh@Prueba".
+/// `ssh` en fysh pasa el nombre guardado en FYSH_HOST; si se abrió a mano por ssh, el nombre del equipo.
+fn remote_label(fysh_host: Option<String>, over_ssh: bool, hostname: Option<String>) -> Option<String> {
+    let clean = |s: String| Some(s.trim().to_string()).filter(|s| !s.is_empty());
+    fysh_host.and_then(clean).or_else(|| if over_ssh { hostname.and_then(clean).or(Some("servidor".into())) } else { None })
+}
+
+static REMOTE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+pub fn remote() -> Option<&'static str> {
+    REMOTE
+        .get_or_init(|| {
+            let over_ssh = std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some();
+            let hostname = std::env::var("HOSTNAME").ok().or_else(|| std::fs::read_to_string("/etc/hostname").ok());
+            remote_label(std::env::var("FYSH_HOST").ok(), over_ssh, hostname)
+        })
+        .as_deref()
+}
+
+/// Título de la pestaña de la terminal.
+pub fn set_title(title: &str) {
+    print!("\x1b]0;{title}\x07");
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+}
+
+/// "fysh" en tu PC, "fysh@Prueba" dentro de un servidor.
+pub fn shell_name() -> String {
+    match remote() {
+        Some(host) => format!("fysh@{host}"),
+        None => "fysh".into(),
+    }
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("fysh {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     let mut shell = Shell::new();
 
     // Ctrl+C mientras corre un programa lo corta a él, no a la shell.
     ctrlc::set_handler(|| {}).ok();
 
-    print!("\x1b]0;fysh\x07"); // título de la ventana
+    set_title(&shell_name());
     println!("{RED}{BANNER}{RESET}");
-    println!("  {GRAY}v{} · escribe 'help' para ver los comandos{RESET}\n", env!("CARGO_PKG_VERSION"));
+    let place = remote().map(|h| format!(" · en {YELLOW}{h}{GRAY} (por ssh)")).unwrap_or_default();
+    println!("  {GRAY}v{}{place} · escribe 'help' para ver los comandos{RESET}\n", env!("CARGO_PKG_VERSION"));
     aliases::load(&mut shell);
 
     // Editor de línea: Tab completa, ↑↓ recorren el historial, las sugerencias grises salen del historial.
@@ -220,7 +258,12 @@ fn prompt(shell: &Shell) -> String {
         code => format!("{RED}[{code}] "),
     };
     let git = git::prompt_segment();
-    format!("{BOLD}{RED}fysh{RESET} {GRAY}{cwd}{RESET}{git} {took}{status}{RED}❯{RESET} ")
+    // Dentro de un servidor el nombre va en amarillo, para no confundirlo con tu PC.
+    let name = match remote() {
+        Some(_) => format!("{BOLD}{YELLOW}{}{RESET}", shell_name()),
+        None => format!("{BOLD}{RED}fysh{RESET}"),
+    };
+    format!("{name} {GRAY}{cwd}{RESET}{git} {took}{status}{RED}❯{RESET} ")
 }
 
 /// 12s · 2m 05s · 1h 03m
@@ -297,6 +340,16 @@ pub fn install_hint(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nombre_del_servidor_en_el_prompt() {
+        let s = |v: &str| Some(v.to_string());
+        assert_eq!(remote_label(s("Prueba"), true, s("abc123")), s("Prueba")); // nombre guardado gana
+        assert_eq!(remote_label(None, true, s("ip-172-31-5-9\n")), s("ip-172-31-5-9"));
+        assert_eq!(remote_label(None, true, None), s("servidor"));
+        assert_eq!(remote_label(None, false, s("mi-pc")), None); // en tu PC: sin @
+        assert_eq!(remote_label(s("  "), false, None), None);
+    }
 
     #[test]
     fn formatea_duraciones() {

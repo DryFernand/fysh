@@ -227,9 +227,11 @@ fn remember_no_fysh(name: &str) {
 }
 
 /// Ruta de fysh en el servidor (en el PATH o en ~/.local/bin).
+/// Ruta y versión de fysh en el servidor (en el PATH o en ~/.local/bin).
 /// Err si no se pudo conectar (ssh ya mostró el error).
-fn remote_fysh(name: &str) -> Result<Option<String>, i32> {
-    let script = r#"command -v fysh 2>/dev/null || { [ -x "$HOME/.local/bin/fysh" ] && echo "$HOME/.local/bin/fysh"; }"#;
+fn remote_fysh(name: &str) -> Result<Option<(String, Option<String>)>, i32> {
+    // La versión sale de `fysh --version` o, en versiones viejas sin esa opción, del banner.
+    let script = r#"F=$(command -v fysh 2>/dev/null || { [ -x "$HOME/.local/bin/fysh" ] && echo "$HOME/.local/bin/fysh"; }); [ -n "$F" ] && echo "$F" && "$F" --version </dev/null 2>/dev/null | head -12"#;
     let out = std::process::Command::new("ssh")
         .args([name, script])
         .stderr(std::process::Stdio::inherit())
@@ -238,21 +240,71 @@ fn remote_fysh(name: &str) -> Result<Option<String>, i32> {
     if out.status.code() == Some(255) {
         return Err(255); // 255 = ssh no pudo conectar o autenticarse
     }
-    let path = String::from_utf8_lossy(&out.stdout).lines().last().unwrap_or("").trim().to_string();
-    Ok(path.starts_with('/').then_some(path))
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let path = lines.next().unwrap_or("").trim().to_string();
+    if !path.starts_with('/') {
+        return Ok(None);
+    }
+    Ok(Some((path, parse_version(&lines.collect::<Vec<_>>().join("\n")))))
 }
 
-/// Conectar: si el servidor tiene fysh, entra con fysh; si no, ofrece instalarlo
-/// (en ~/.local/bin, sin sudo) o entrar normal.
+/// Primera versión "x.y.z" que aparezca en el texto (con o sin "v" delante).
+fn parse_version(text: &str) -> Option<String> {
+    text.split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .find(|w| w.split('.').count() == 3 && w.split('.').all(|p| !p.is_empty()))
+        .map(str::to_owned)
+}
+
+/// ¿La versión `a` es más vieja que `b`? ("0.2.1" < "0.2.10")
+fn older(a: &str, b: &str) -> bool {
+    let nums = |v: &str| v.split('.').map(|p| p.parse::<u32>().unwrap_or(0)).collect::<Vec<_>>();
+    nums(a) < nums(b)
+}
+
+fn install_on(name: &str) -> bool {
+    let install = format!("(curl -fsSL {INSTALL_URL} || wget -qO- {INSTALL_URL}) | sh");
+    run_external(&["ssh".into(), name.into(), install]) == 0
+}
+
+/// Entra a fysh en el servidor. FYSH_HOST hace que el prompt diga "fysh@<nombre>".
+fn enter_fysh(name: &str, path: &str) -> i32 {
+    run_external(&["ssh".into(), "-t".into(), name.into(), format!("env FYSH_HOST={name} {path}")])
+}
+
+/// Conectar: si el servidor tiene fysh, entra con fysh (y ofrece actualizarlo si es más viejo);
+/// si no, ofrece instalarlo (en ~/.local/bin, sin sudo) o entrar normal.
+/// Mientras dura la conexión la pestaña se llama "fysh@<nombre>".
 fn connect(name: &str) -> i32 {
+    crate::set_title(&format!("fysh@{name}"));
+    let code = connect_inner(name);
+    crate::set_title(&crate::shell_name());
+    code
+}
+
+fn connect_inner(name: &str) -> i32 {
     let plain = || run_external(&["ssh".into(), name.into()]);
     if skips_fysh(name) || !std::io::stdin().is_terminal() {
         return plain();
     }
     println!("{GRAY}Buscando fysh en {name}…{RESET}");
+    let local = env!("CARGO_PKG_VERSION");
     match remote_fysh(name) {
         Err(code) => code,
-        Ok(Some(path)) => run_external(&["ssh".into(), "-t".into(), name.into(), path]),
+        Ok(Some((path, version))) => {
+            if let Some(v) = version.filter(|v| older(v, local)) {
+                let rows = vec![
+                    vec![format!("Actualizar fysh en {name} (v{v} → v{local})")],
+                    vec![format!("Entrar con la v{v}")],
+                ];
+                match picker::select_one(&["El fysh del servidor es más viejo que el tuyo"], &rows) {
+                    Some(0) if !install_on(name) => eprintln!("{RED}No se pudo actualizar.{RESET} {GRAY}Entro con la v{v}.{RESET}"),
+                    None => return 0,
+                    _ => {}
+                }
+            }
+            enter_fysh(name, &path)
+        }
         Ok(None) => {
             let rows = vec![
                 vec!["Instalar fysh en el servidor y entrar con fysh".into(), format!("{GRAY}en ~/.local/bin, sin sudo{RESET}")],
@@ -262,12 +314,11 @@ fn connect(name: &str) -> i32 {
             println!("{GRAY}{name} no tiene fysh.{RESET}");
             match picker::select_one(&["¿Cómo entrar?", ""], &rows) {
                 Some(0) => {
-                    let install = format!("(curl -fsSL {INSTALL_URL} || wget -qO- {INSTALL_URL}) | sh");
-                    if run_external(&["ssh".into(), name.into(), install]) != 0 {
+                    if !install_on(name) {
                         eprintln!("{RED}No se pudo instalar fysh en {name}.{RESET} {GRAY}Entro normal.{RESET}");
                         return plain();
                     }
-                    run_external(&["ssh".into(), "-t".into(), name.into(), "~/.local/bin/fysh".into()])
+                    enter_fysh(name, "~/.local/bin/fysh")
                 }
                 Some(1) => plain(),
                 Some(2) => {
@@ -683,6 +734,15 @@ mod tests {
         assert!(!is_private_key(&dir.join("id_ed25519.pub")));
         assert!(!is_private_key(&dir.join("notas.pem")));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lee_y_compara_versiones() {
+        assert_eq!(parse_version("fysh 0.2.2").as_deref(), Some("0.2.2"));
+        let banner = "\n  ███╗\n  v0.2.1 · escribe 'help' para ver los comandos";
+        assert_eq!(parse_version(banner).as_deref(), Some("0.2.1"));
+        assert_eq!(parse_version("sin versión"), None);
+        assert!(older("0.2.1", "0.2.2") && older("0.2.9", "0.2.10") && !older("0.3.0", "0.2.9") && !older("0.2.2", "0.2.2"));
     }
 
     #[test]
