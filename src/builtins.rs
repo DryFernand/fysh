@@ -25,6 +25,12 @@ pub fn run(args: &[String], shell: &mut Shell) -> Option<i32> {
         "touch" => crate::files::touch(rest),
         "open" => crate::files::open(rest),
         "buscar" => crate::files::buscar(rest),
+        "espacio" => crate::espacio::espacio_cmd(rest),
+        "extraer" => crate::archive::extraer_cmd(rest),
+        "comprimir" => crate::archive::comprimir_cmd(rest),
+        "renombrar" => crate::rename::renombrar_cmd(rest),
+        "compartir" => crate::share::compartir_cmd(rest),
+        "programar" => crate::schedule::programar_cmd(rest),
         "alias" => {
             let raw = shell.line.trim_start().strip_prefix("alias").unwrap_or("").to_string();
             crate::aliases::alias_cmd(shell, &raw)
@@ -389,7 +395,7 @@ fn read_cmd(args: &[String]) -> i32 {
 }
 
 /// 1536 → "1.5 KB"
-fn human_size(bytes: u64) -> String {
+pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut size = bytes as f64;
     let mut unit = 0;
@@ -419,6 +425,12 @@ fn help() -> i32 {
         ("rm <archivo>", "Manda archivos o carpetas a la papelera"),
         ("open [ruta]", "Abre la carpeta en el Explorador (o un archivo/URL)"),
         ("buscar <texto> [-file|-folder]", "Busca por nombre aquí y en todas las subcarpetas; da la ruta completa"),
+        ("espacio [carpeta]", "Qué ocupa más lugar, de mayor a menor"),
+        ("extraer <archivo>", "Descomprime zip, tar.gz, 7z, rar… en una carpeta con su nombre"),
+        ("comprimir <ruta>... [-o x.zip]", "Crea un .zip (o .tar.gz con -o) con archivos o carpetas"),
+        ("renombrar <texto> <nuevo>", "Renombra muchos a la vez con vista previa ({n} numera); -deshacer"),
+        ("compartir <ruta> | -recibir", "QR para bajar al celular, o subir desde él, por tu Wi-Fi"),
+        ("programar \"cmd\" <cuándo>", "Corre un comando solo: diario 9:00, lunes 18:00, cada 15 minutos…"),
         ("echo [texto]", "Imprime texto"),
         ("set [NOMBRE=valor]", "Define una variable solo para esta sesión; sin argumentos, las lista"),
         ("env", "Variables de entorno permanentes: ver, crear, editar o borrar"),
