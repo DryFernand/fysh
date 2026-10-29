@@ -2,7 +2,7 @@
 //! escribes (comando verde si existe, rojo si no) y prompt con colores.
 
 use crate::git;
-use crate::{BLUE, GREEN, RED, RESET, YELLOW};
+use crate::{BLUE, GRAY, GREEN, RED, RESET, YELLOW};
 use rustyline::completion::{Completer, FilenameCompleter, Pair};
 use rustyline::highlight::Highlighter;
 use rustyline::hint::{Hinter, HistoryHinter};
@@ -48,7 +48,7 @@ impl ConditionalEventHandler for FileSearch {
 
 /// Comandos propios de fysh y agentes, para completar la primera palabra.
 const COMMANDS: &[&str] = &[
-    "cd", "cls", "clear", "dir", "ls", "pwd", "mkdir", "touch", "cat", "cp", "mv", "rm", "open", "echo", "set", "env",
+    "cd", "cls", "clear", "dir", "ls", "pwd", "mkdir", "touch", "cat", "cp", "mv", "rm", "open", "buscar", "echo", "set", "env",
     "path", "history", "alias", "unalias", "config", "help", "exit", "z", "ssh", "tunel", "db", "http", "run", "puertos", "procesos", "docker", "agent", "explica", "ins:", "actualizar", "update", "git", "claude",
     "agy", "antigravity", "opencode", "if", "else", "end", "for", "while", "function", "break", "continue", "return",
     "source", "test", "true", "false", "math", "read", "jobs", "fg",
@@ -185,6 +185,14 @@ fn colorize(line: &str, is_command: impl Fn(&str) -> bool) -> String {
             let text: String = chars[i..end].iter().collect();
             out += &format!("{BLUE}{text}{RESET}");
             i = end;
+        } else if c == '-' && (i == 0 || chars[i - 1].is_whitespace()) {
+            // Opciones (-file, --force): grises para distinguirlas del resto.
+            let start = i;
+            while i < chars.len() && !chars[i].is_whitespace() && !is_op(chars[i]) {
+                i += 1;
+            }
+            let text: String = chars[start..i].iter().collect();
+            out += &format!("{GRAY}{text}{RESET}");
         } else {
             out.push(c);
             i += 1;
@@ -302,6 +310,10 @@ mod tests {
         assert!(out.starts_with(&format!("{GREEN}git{RESET}")));
         assert!(out.contains(&format!("{YELLOW}\"hola mundo\"{RESET}")));
         assert!(out.contains(&format!("{BLUE}$USER{RESET}")) && out.contains(&format!("{BLUE}$?{RESET}")));
+        assert!(out.contains(&format!("{GRAY}-m{RESET}")));
+        let flags = colorize("buscar a-b -file --x=1", known);
+        assert!(flags.contains(&format!("{GRAY}-file{RESET}")) && flags.contains(&format!("{GRAY}--x=1{RESET}")));
+        assert!(flags.contains(" a-b "), "un guion dentro de una palabra no es opción: {flags}");
         assert!(colorize("  gti status", known).starts_with(&format!("  {RED}gti{RESET}")));
         // Los colores no cambian el texto visible.
         let line = "echo \"sin cerrar $X";

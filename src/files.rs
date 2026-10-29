@@ -1,4 +1,4 @@
-//! Comandos de archivos: mkdir, rm, cp, mv, cat, touch y open.
+//! Comandos de archivos: mkdir, rm, cp, mv, cat, touch, open y buscar.
 //! rm no borra para siempre: manda a la papelera. cp y mv preguntan antes de reemplazar,
 //! y lo reemplazado también va a la papelera, así nada se pierde por un error.
 
@@ -232,6 +232,101 @@ pub fn open(args: &[String]) -> i32 {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Any,
+    File,
+    Folder,
+}
+
+/// Recorre `root` y todas sus subcarpetas (en paralelo) y llama a `found` con cada ruta cuyo
+/// nombre contiene `text`, sin importar mayúsculas. Ctrl+C la corta.
+fn walk(root: &Path, text: &str, kind: Kind, found: &(dyn Fn(&Path, bool) + Sync)) {
+    use crate::script::INTERRUPTED;
+    use ignore::WalkState;
+    use std::sync::atomic::Ordering;
+    let needle = text.to_lowercase();
+    ignore::WalkBuilder::new(root)
+        .standard_filters(false) // todo: ocultos y lo que diga .gitignore también
+        .build_parallel()
+        .run(|| {
+            Box::new(|entry| {
+                if INTERRUPTED.load(Ordering::Relaxed) {
+                    return WalkState::Quit;
+                }
+                // Sin permiso para leer una carpeta: se salta y sigue.
+                let Ok(entry) = entry else { return WalkState::Continue };
+                let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
+                let wanted = match kind {
+                    Kind::Any => true,
+                    Kind::File => !is_dir,
+                    Kind::Folder => is_dir,
+                };
+                if entry.depth() > 0 && wanted && entry.file_name().to_string_lossy().to_lowercase().contains(&needle) {
+                    found(entry.path(), is_dir);
+                }
+                WalkState::Continue
+            })
+        });
+}
+
+/// `buscar <texto> [-file|-folder]`: rutas completas de lo que se llame así, desde la carpeta actual hacia abajo.
+pub fn buscar(args: &[String]) -> i32 {
+    let mut kind = Kind::Any;
+    let mut words = Vec::new();
+    for a in args {
+        match a.as_str() {
+            "-file" => kind = Kind::File,
+            "-folder" => kind = Kind::Folder,
+            _ => words.push(a.as_str()),
+        }
+    }
+    let text = words.join(" ");
+    if text.is_empty() {
+        return usage("buscar <texto> [-file | -folder]");
+    }
+    let Ok(cwd) = std::env::current_dir() else { return 1 };
+    let started = std::time::Instant::now();
+    // Mientras busca, un contador en la misma línea; la tabla sale al final, ordenada.
+    let live = std::io::IsTerminal::is_terminal(&io::stderr());
+    if live {
+        eprint!("{GRAY}Buscando en {}…{RESET}", cwd.display());
+    }
+    let found = std::sync::Mutex::new(Vec::new());
+    walk(&cwd, &text, kind, &|path, is_dir| {
+        let mut found = found.lock().unwrap();
+        found.push((path.parent().map(|p| p.display().to_string()).unwrap_or_default(), path.file_name().unwrap_or_default().to_string_lossy().to_string(), is_dir));
+        if live {
+            eprint!("\r\x1b[2K{GRAY}Buscando… {} encontrados{RESET}", found.len());
+        }
+    });
+    if live {
+        eprint!("\r\x1b[2K");
+    }
+    let mut found = found.into_inner().unwrap();
+    found.sort_by_key(|(folder, name, _)| (folder.to_lowercase(), name.to_lowercase()));
+    let n = found.len();
+    if n > 0 {
+        let rows: Vec<Vec<String>> = found
+            .into_iter()
+            .map(|(folder, name, is_dir)| vec![name, if is_dir { "carpeta" } else { "archivo" }.to_string(), folder])
+            .collect();
+        crate::table::print(&["Nombre", "Tipo", "Carpeta"], &[crate::table::Align::Left, crate::table::Align::Left, crate::table::Align::Left], &rows);
+    }
+    let what = match kind {
+        Kind::Any => "resultado",
+        Kind::File => "archivo",
+        Kind::Folder => "carpeta",
+    };
+    let s = if n == 1 { "" } else { "s" };
+    eprintln!("{GRAY}{n} {what}{s} con \"{text}\" en {} ({}){RESET}", cwd.display(), crate::format_duration(started.elapsed()));
+    if n == 0 {
+        1
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,6 +349,27 @@ mod tests {
         assert_eq!(fs::read_to_string(base.join("movida").join("a.txt")).unwrap(), "hola");
         assert!(same_path(&base.join("movida"), &base.join("movida").join("..").join("movida")));
 
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn busca_en_subcarpetas() {
+        let base = std::env::temp_dir().join(format!("fysh-buscar-{}", std::process::id()));
+        fs::create_dir_all(base.join("Facturas").join("2026")).unwrap();
+        fs::write(base.join("Facturas").join("2026").join("factura-enero.pdf"), "").unwrap();
+        fs::write(base.join("notas.txt"), "").unwrap();
+        let names = |text: &str, kind: Kind| {
+            let found = std::sync::Mutex::new(Vec::new());
+            walk(&base, text, kind, &|p, _| found.lock().unwrap().push(p.file_name().unwrap().to_string_lossy().to_string()));
+            let mut v = found.into_inner().unwrap();
+            v.sort();
+            v
+        };
+        assert_eq!(names("FACTURA", Kind::Any), ["Facturas", "factura-enero.pdf"], "sin importar mayúsculas");
+        assert_eq!(names("factura", Kind::File), ["factura-enero.pdf"]);
+        assert_eq!(names("factura", Kind::Folder), ["Facturas"]);
+        assert_eq!(names(".txt", Kind::Any), ["notas.txt"]);
+        assert!(names("nada", Kind::Any).is_empty());
         fs::remove_dir_all(&base).unwrap();
     }
 }

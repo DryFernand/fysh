@@ -24,6 +24,7 @@ pub fn run(args: &[String], shell: &mut Shell) -> Option<i32> {
         "cat" => crate::files::cat(rest),
         "touch" => crate::files::touch(rest),
         "open" => crate::files::open(rest),
+        "buscar" => crate::files::buscar(rest),
         "alias" => {
             let raw = shell.line.trim_start().strip_prefix("alias").unwrap_or("").to_string();
             crate::aliases::alias_cmd(shell, &raw)
@@ -417,6 +418,7 @@ fn help() -> i32 {
         ("mv <origen> <destino>", "Mueve o renombra archivos o carpetas"),
         ("rm <archivo>", "Manda archivos o carpetas a la papelera"),
         ("open [ruta]", "Abre la carpeta en el Explorador (o un archivo/URL)"),
+        ("buscar <texto> [-file|-folder]", "Busca por nombre aquí y en todas las subcarpetas; da la ruta completa"),
         ("echo [texto]", "Imprime texto"),
         ("set [NOMBRE=valor]", "Define una variable solo para esta sesión; sin argumentos, las lista"),
         ("env", "Variables de entorno permanentes: ver, crear, editar o borrar"),

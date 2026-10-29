@@ -188,7 +188,7 @@ fn context() -> String {
 }
 
 const FYSH_ABILITIES: &str = "fysh tiene estos comandos propios: cd, dir/ls, mkdir, rm (manda a la papelera), cp, mv, cat, \
-touch, open, echo, set NOMBRE=valor, env, path, alias, z <carpeta>, y git funciona normal. Ejecuta cualquier programa del PATH \
+touch, open, buscar <texto> [-file|-folder] (busca por nombre en subcarpetas), echo, set NOMBRE=valor, env, path, alias, z <carpeta>, y git funciona normal. Ejecuta cualquier programa del PATH \
 (git, npm, python, etc.). Soporta pipes (|), redirecciones (> >> < 2> 2>&1), && / || / ; y comodines (* ?), \
 como bash, además de $(comando) y comando & (segundo plano). Bloques al estilo fish, no bash: \
 if cond; …; else; …; end · for x in a b; …; end · while cond; …; end · function f; …; end; condiciones con \
